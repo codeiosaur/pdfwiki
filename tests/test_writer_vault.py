@@ -1,7 +1,7 @@
 from pathlib import Path
 
-import src.pdf_to_obsidian.vault as vault
-import src.pdf_to_obsidian.writer as writer
+import pdf_to_obsidian.vault as vault
+import pdf_to_obsidian.writer as writer
 
 
 def test_sanitize_filename_removes_invalid_characters():

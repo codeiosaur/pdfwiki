@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import src.pdf_to_obsidian.main as main
+import pdf_to_obsidian.main as main
 
 
 INDEX_RUN_1 = """CONCEPTS:
