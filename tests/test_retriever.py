@@ -1,4 +1,4 @@
-import pdf_to_obsidian.retriever as retriever
+import pdfwiki.retriever as retriever
 
 
 def test_keywords_from_concept_extracts_words_abbreviations_and_phrase():

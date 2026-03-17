@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-import pdf_to_obsidian.main as main
+import pdfwiki.main as main
 
 
 def test_run_cli_processes_each_pdf_in_multi_mode(monkeypatch, tmp_path):

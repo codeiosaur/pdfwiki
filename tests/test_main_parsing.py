@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import pdf_to_obsidian.main as main
+import pdfwiki.main as main
 
 
 def test_parse_index_extracts_only_concepts_section():

@@ -16,11 +16,11 @@ import argparse
 from pathlib import Path
 from difflib import get_close_matches
 
-from pdf_to_obsidian.extractor import extract_text, split_into_chapters, chunk_text, chunk_by_page
-from pdf_to_obsidian.retriever import retrieve_chunks
-from pdf_to_obsidian.ai_client import query
-from pdf_to_obsidian.writer import write_wiki, write_flashcards, write_cheatsheet
-from pdf_to_obsidian.vault import load_vault_state, find_existing_page
+from pdfwiki.extractor import extract_text, split_into_chapters, chunk_text, chunk_by_page
+from pdfwiki.retriever import retrieve_chunks
+from pdfwiki.ai_client import query
+from pdfwiki.writer import write_wiki, write_flashcards, write_cheatsheet
+from pdfwiki.vault import load_vault_state, find_existing_page
 
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
