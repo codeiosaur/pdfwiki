@@ -605,20 +605,8 @@ def _split_adjacent_wikilink_bullets(content: str) -> str:
     fixed_lines: list[str] = []
     for line in content.splitlines():
         stripped = line.lstrip()
-        if (stripped.startswith("- ") or stripped.startswith("* ")) and "]] [[" not in line and "]] [[" not in line.replace("]] [[", "]] [["):
-            if "]] [[" not in line and "]] [[" not in line:
-                if "]] [[" not in line and "]] [[" not in line:
-                    pass
-        if (stripped.startswith("- ") or stripped.startswith("* ")) and "]] [[" not in line and "]] [[" not in line:
-            if "]] [[" not in line and "]] [[" not in line:
-                if "]] [[" not in line:
-                    line_has_adjacent = "]] [[" in line or "]]\[\[" in line
-                else:
-                    line_has_adjacent = True
-            else:
-                line_has_adjacent = True
-        else:
-            line_has_adjacent = ("]]\[\[" in line and (stripped.startswith("- ") or stripped.startswith("* ")))
+        is_bullet = stripped.startswith("- ") or stripped.startswith("* ")
+        line_has_adjacent = is_bullet and bool(re.search(r"\]\]\s*\[\[", line))
 
         if not line_has_adjacent:
             fixed_lines.append(line)

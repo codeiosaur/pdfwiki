@@ -23,6 +23,7 @@ Rules:
 - Open with a 2-3 sentence lead paragraph summarizing the concept
 - Use [[Page Name]] wikilinks whenever you reference a concept from the index
 - CRITICAL: wikilink names must match the index EXACTLY as written — copy character-for-character
+- For brute-force resistance language, prefer "key space size" over ambiguous phrasing like "small encryption keys"
 - End with a ### Related section listing wikilinks with a one-line note on WHY each is related
 - Output ONLY the wiki page. No preamble, no explanation.
 

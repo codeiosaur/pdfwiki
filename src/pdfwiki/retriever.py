@@ -289,8 +289,8 @@ def retrieve_ranked_chunks_with_scores(
 def _compute_adaptive_context_size(
     avg_score: float,
     base_max_chars: int,
-    min_chars: int = 1500,
-    max_chars: int = 5000,
+    min_factor: float = 0.75,
+    max_factor: float = 1.25,
 ) -> int:
     """
     Scale context size based on BM25 relevance score.
@@ -301,14 +301,16 @@ def _compute_adaptive_context_size(
     avg_score: average BM25 relevance score (higher = better match)
     base_max_chars: default context size from profile
     """
-    # Normalize score to 0-1 scale (BM25 scores are unbounded, but typically 0-50 for us)
-    normalized = min(avg_score / 20.0, 1.0)  # 0-20 → 0-1
-    
-    # Inverse scaling: high score uses less context
-    # Formula: at 100% relevance (score=1.0), use min_chars (tight)
-    #         at 0% relevance (score=0), use max_chars (loose)
+    base = max(1200, int(base_max_chars))
+    min_chars = max(1000, int(base * min_factor))
+    max_chars = max(min_chars + 300, int(base * max_factor))
+
+    # Normalize score to [0, 1]. Higher score means stronger match.
+    normalized = min(max(avg_score, 0.0) / 20.0, 1.0)
+
+    # Inverse scaling around the profile budget:
+    # strong signal -> smaller context, weak signal -> larger context.
     context_size = max_chars - (normalized * (max_chars - min_chars))
-    
     return max(min_chars, min(int(context_size), max_chars))
 
 
