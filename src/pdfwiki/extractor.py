@@ -4,9 +4,11 @@ Format-agnostic: works on slide decks, textbooks, papers, and notes.
 """
 
 import re
+import os
 import importlib
 import pdfplumber
 from pathlib import Path
+from pdfwiki.retriever import deduplicate_chunks
 
 
 # --- Text conversion to Markdown ---
@@ -43,8 +45,10 @@ def extract_text_with_markitdown(file_path: str) -> str:
         result = mmd.convert(file_path)
         markdown_text = result.text_content
         
-        # If no markdown content extracted, fall back to plain extract_text for PDFs
+        # If no markdown content extracted, fall back to plain extract_text for PDFs.
+        # Keep this explicit so users know extraction mode changed.
         if not markdown_text.strip() and path.suffix.lower() == '.pdf':
+            print(f"  [warn] markitdown returned empty text for {file_path}; falling back to pdfplumber")
             return extract_text(file_path, use_markdown=False)
         
         # Estimate page count from content size and line count for page markers
@@ -65,7 +69,33 @@ def extract_text_with_markitdown(file_path: str) -> str:
 
 # --- Text extraction ---
 
-def extract_text(pdf_path: str, use_markdown: bool = False) -> str:
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Parse a bool-like environment variable with a safe default."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_use_markitdown(use_markdown: bool | None) -> bool:
+    """
+    Resolve whether MarkItDown should be used.
+
+    Precedence:
+    1) explicit function argument
+    2) USE_MARKITDOWN env var
+    3) PDF_TO_NOTES_USE_MARKITDOWN env var (compat alias)
+    4) default False
+    """
+    if use_markdown is not None:
+        return use_markdown
+
+    if "USE_MARKITDOWN" in os.environ:
+        return _env_bool("USE_MARKITDOWN", default=False)
+
+    return _env_bool("PDF_TO_NOTES_USE_MARKITDOWN", default=False)
+
+def extract_text(pdf_path: str, use_markdown: bool | None = None) -> str:
     """
     Extract all text from a PDF file.
     
@@ -73,11 +103,17 @@ def extract_text(pdf_path: str, use_markdown: bool = False) -> str:
         pdf_path: Path to PDF file
         use_markdown: If True, use markitdown for extraction (with markdown formatting).
                       If False, use pdfplumber (plain text, faster).
+                      If None, resolve from env vars USE_MARKITDOWN /
+                      PDF_TO_NOTES_USE_MARKITDOWN.
     
     Returns a single string with page separators.
     """
-    if use_markdown:
+    use_markitdown = resolve_use_markitdown(use_markdown)
+    if use_markitdown:
+        print("  Extraction backend: markitdown")
         return extract_text_with_markitdown(pdf_path)
+    else:
+        print("  Extraction backend: pdfplumber")
     
     path = Path(pdf_path)
     if not path.exists():
@@ -117,6 +153,186 @@ CHAPTER_REGEX = re.compile(
     re.IGNORECASE | re.MULTILINE
 )
 
+PAGE_MARKER_REGEX = re.compile(r'^--- Page \d+ ---$', re.MULTILINE)
+HEADING_REGEX = re.compile(r'(?m)^#{1,6}\s+.+$')
+
+
+def has_page_markers(text: str) -> bool:
+    """Return True if text contains page markers like '--- Page N ---'."""
+    return bool(PAGE_MARKER_REGEX.search(text))
+
+
+def has_headings(text: str) -> bool:
+    """Return True if text contains markdown-style headings."""
+    return bool(HEADING_REGEX.search(text))
+
+
+def has_paragraphs(text: str) -> bool:
+    """Return True if text appears to contain multiple paragraph breaks."""
+    return len(re.findall(r'\n\s*\n', text)) >= 2
+
+
+def _enforce_max_chunk_size(chunks: list[str], max_chars: int, overlap: int) -> list[str]:
+    """Ensure no output chunk exceeds max_chars by re-splitting oversized chunks."""
+    bounded: list[str] = []
+    for chunk in chunks:
+        cleaned = chunk.strip()
+        if not cleaned:
+            continue
+        if len(cleaned) <= max_chars:
+            bounded.append(cleaned)
+            continue
+        bounded.extend(chunk_by_size(cleaned, max_chars=max_chars, overlap=overlap))
+    return bounded
+
+
+def _finalize_chunks(chunks: list[str], max_chars: int, overlap: int) -> list[str]:
+    """Normalize, enforce max size, and deduplicate chunk output."""
+    normalized = [c.strip() for c in chunks if c and c.strip()]
+    bounded = _enforce_max_chunk_size(normalized, max_chars=max_chars, overlap=overlap)
+    deduped = deduplicate_chunks(bounded)
+    return deduped
+
+
+def _adaptive_semantic_chunk_config(text: str) -> tuple[int, int]:
+    """
+    Pick semantic chunk settings based on document shape.
+    This keeps chunk counts useful for retrieval across slides and textbooks.
+    """
+    text_len = len(text.strip())
+    if text_len <= 0:
+        return 1800, 120
+
+    line_count = max(text.count("\n") + 1, 1)
+    avg_line_len = text_len / line_count
+    slide_like = line_count >= 180 and avg_line_len <= 90
+
+    # Target a chunk count range that is retrieval-friendly for BM25.
+    target_size = 1800 if slide_like else 2600
+    target_chunks = max(15, min(100, text_len // target_size))
+
+    max_chars = text_len // max(target_chunks, 1)
+    max_chars = max(1200, min(3200, max_chars))
+    if slide_like:
+        max_chars = min(max_chars, 1800)
+
+    overlap = max(80, min(220, max_chars // 10))
+    return max_chars, overlap
+
+
+def chunk_by_size(text: str, max_chars: int = 6000, overlap: int = 200) -> list[str]:
+    """Chunk text by fixed size with overlap for continuity."""
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+
+    step = max(1, max_chars - overlap)
+    chunks = []
+    for start in range(0, len(cleaned), step):
+        piece = cleaned[start:start + max_chars].strip()
+        if piece:
+            chunks.append(piece)
+        if start + max_chars >= len(cleaned):
+            break
+    return chunks
+
+
+def chunk_by_headings(
+    text: str,
+    max_chars: int = 6000,
+    overlap: int = 200,
+    min_section_chars: int = 1000,
+) -> list[str]:
+    """
+    Split text on markdown headings and group undersized sections.
+    Oversized groups are constrained to max_chars in post-processing.
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        return []
+
+    heading_matches = list(HEADING_REGEX.finditer(cleaned))
+    if not heading_matches:
+        return []
+
+    sections: list[str] = []
+    first_heading_start = heading_matches[0].start()
+    if first_heading_start > 0:
+        lead = cleaned[:first_heading_start].strip()
+        if lead:
+            sections.append(lead)
+
+    for i, match in enumerate(heading_matches):
+        start = match.start()
+        end = heading_matches[i + 1].start() if i + 1 < len(heading_matches) else len(cleaned)
+        section = cleaned[start:end].strip()
+        if section:
+            sections.append(section)
+
+    grouped: list[str] = []
+    buffer = ""
+    for section in sections:
+        if not buffer:
+            buffer = section
+        elif len(buffer) < min_section_chars:
+            buffer = f"{buffer}\n\n{section}".strip()
+        else:
+            grouped.append(buffer)
+            buffer = section
+
+    if buffer:
+        grouped.append(buffer)
+
+    return _finalize_chunks(grouped, max_chars=max_chars, overlap=overlap)
+
+
+def chunk_by_paragraphs(text: str, max_chars: int = 6000, overlap: int = 200) -> list[str]:
+    """Chunk text by paragraph boundaries using semantic chunking logic."""
+    chunks = chunk_text(text, max_chars=max_chars, overlap=overlap)
+    return _finalize_chunks(chunks, max_chars=max_chars, overlap=overlap)
+
+
+def smart_chunk(
+    text: str,
+    max_chars: int = 6000,
+    overlap: int = 200,
+    pages_per_chunk: int = 3,
+    min_section_chars: int = 1000,
+) -> list[str]:
+    """
+    Select the best chunking strategy based on document structure.
+
+    Priority:
+    1) page markers
+    2) markdown headings
+    3) paragraph boundaries
+    4) fixed-size chunking fallback
+    """
+    if has_page_markers(text):
+        strategy = "page-based"
+        chunks = chunk_by_page(text, pages_per_chunk=pages_per_chunk)
+    elif has_headings(text):
+        strategy = "heading-based"
+        chunks = chunk_by_headings(
+            text,
+            max_chars=max_chars,
+            overlap=overlap,
+            min_section_chars=min_section_chars,
+        )
+    elif has_paragraphs(text):
+        strategy = "paragraph-based"
+        adaptive_max, adaptive_overlap = _adaptive_semantic_chunk_config(text)
+        chunks = chunk_by_paragraphs(text, max_chars=adaptive_max, overlap=adaptive_overlap)
+    else:
+        strategy = "size-based"
+        adaptive_max, adaptive_overlap = _adaptive_semantic_chunk_config(text)
+        chunks = chunk_by_size(text, max_chars=adaptive_max, overlap=adaptive_overlap)
+
+    finalized = _finalize_chunks(chunks, max_chars=max_chars, overlap=overlap)
+    print(f"  Chunking strategy: {strategy}")
+    print(f"  Total chunks: {len(finalized)}")
+    return finalized
+
 
 def chunk_by_page(text: str, pages_per_chunk: int = 3) -> list[str]:
     """
@@ -127,6 +343,9 @@ def chunk_by_page(text: str, pages_per_chunk: int = 3) -> list[str]:
     pages_per_chunk: group N pages per chunk (1 = most granular,
                      3 = good balance of context vs separation)
     """
+    if not has_page_markers(text):
+        return [text.strip()] if text.strip() else []
+
     # Split on page markers inserted by extract_text()
     pages = re.split(r'--- Page \d+ ---', text)
     pages = [p.strip() for p in pages if p.strip()]
@@ -137,7 +356,7 @@ def chunk_by_page(text: str, pages_per_chunk: int = 3) -> list[str]:
     chunks = []
     for i in range(0, len(pages), pages_per_chunk):
         group = pages[i:i + pages_per_chunk]
-        chunks.append("\n\n".join(group))
+        chunks.append("\n\n".join(group).strip())
 
     return chunks
 
@@ -219,9 +438,18 @@ def chunk_text(text: str, max_chars: int = 6000, overlap: int = 200) -> list[str
                 # Overlap: carry last N chars into next chunk for context continuity
                 current_chunk = current_chunk[-overlap:] + "\n\n" + para
             else:
-                # Single paragraph too long — hard split
-                chunks.append(para[:max_chars])
-                current_chunk = para[max_chars - overlap:]
+                # Single paragraph too long — hard split repeatedly.
+                start = 0
+                step = max(1, max_chars - overlap)
+                while start + max_chars < len(para):
+                    chunks.append(para[start:start + max_chars].strip())
+                    start += step
+                current_chunk = para[start:]
+
+            # If carry-over is still oversized, keep splitting until it fits.
+            while len(current_chunk) > max_chars:
+                chunks.append(current_chunk[:max_chars].strip())
+                current_chunk = current_chunk[max(1, max_chars - overlap):]
         else:
             current_chunk += "\n\n" + para if current_chunk else para
 

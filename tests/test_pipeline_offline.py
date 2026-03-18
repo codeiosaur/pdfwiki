@@ -36,7 +36,7 @@ class OfflineQueryStub:
     def __init__(self, index_outputs):
         self.index_outputs = list(index_outputs)
 
-    def __call__(self, prompt: str, system: str = "", max_tokens: int = 4096, quality: bool = False) -> str:
+    def __call__(self, prompt: str, system: str = "", max_tokens: int = 4096, quality: bool = False, task: str = "cheap") -> str:
         if prompt.startswith("INDEX_PROMPT"):
             return self.index_outputs.pop(0)
 
@@ -74,13 +74,14 @@ class OfflineQueryStub:
 
 
 def _mock_pipeline_dependencies(monkeypatch, index_outputs):
-    monkeypatch.setattr(main, "extract_text", lambda pdf_path: "fake extracted text")
+    monkeypatch.setattr(main, "extract_text", lambda pdf_path, use_markdown=False: "fake extracted text")
     monkeypatch.setattr(
         main,
         "split_into_chapters",
         lambda full_text: [{"title": "T", "content": "chapter content", "start_page": 1}],
     )
     monkeypatch.setattr(main, "chunk_by_page", lambda full_text, pages_per_chunk=2: ["chunk 1", "chunk 2"])
+    monkeypatch.setattr(main, "smart_chunk", lambda full_text, pages_per_chunk=2: ["chunk 1", "chunk 2"])
     monkeypatch.setattr(main, "chunk_text", lambda text, max_chars=6000, overlap=200: ["summary chunk"])
     monkeypatch.setattr(
         main,

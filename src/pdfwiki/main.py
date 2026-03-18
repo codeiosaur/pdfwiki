@@ -24,7 +24,7 @@ if __package__ in (None, ""):
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
-from pdfwiki.extractor import extract_text, split_into_chapters, chunk_text, chunk_by_page
+from pdfwiki.extractor import extract_text, split_into_chapters, chunk_text, chunk_by_page, smart_chunk
 from pdfwiki.retriever import retrieve_chunks, retrieve_ranked_chunks, limit_context, find_related_concepts, build_concept_graph
 from pdfwiki.ai_client import query, extract_facts, set_provider, get_provider
 from pdfwiki.writer import write_wiki, write_flashcards, write_cheatsheet
@@ -569,14 +569,13 @@ def process_pdf(pdf_path: str, output_dir: str, subject_override: str = "", batc
 
     # 1. Extract text
     print("\n[1/6] Extracting text from PDF...")
-    full_text = extract_text(pdf_path, use_markdown=True)
+    full_text = extract_text(pdf_path)
 
     # 2. Split into chapters and chunk each one
     print("\n[2/6] Splitting into chapters and chunking...")
     chapters = split_into_chapters(full_text)
-    # Use page-based chunking for slide PDFs — each page is a natural topic boundary
-    # Falls back gracefully on textbooks (pages will just be paragraphs)
-    all_chunks = chunk_by_page(full_text, pages_per_chunk=2)
+    # Smart chunking auto-selects page/headings/paragraph/size strategy.
+    all_chunks = smart_chunk(full_text, pages_per_chunk=2)
     print(f"  Total chunks: {len(all_chunks)}")
 
     # For flashcards/cheatsheet: compressed summary (first chunk per chapter)
