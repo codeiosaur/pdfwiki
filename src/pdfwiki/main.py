@@ -15,6 +15,7 @@ import re
 import os
 import argparse
 import sys
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from difflib import get_close_matches, SequenceMatcher
@@ -51,6 +52,7 @@ REGEX_VERB = re.compile(
     re.IGNORECASE,
 )
 REGEX_MARKDOWN_LINK = re.compile(r'\[([^\]]+)\]\([^\)]+\)')
+REGEX_SOURCE_HASH = re.compile(r'<!--\s*source_context_hash:\s*([0-9a-f]{12,40})\s*-->')
 
 
 RUN_PROFILE_ALIASES = {
@@ -65,7 +67,7 @@ RUN_PROFILE_SETTINGS: dict[str, dict[str, int]] = {
         "write_max_tokens": 800,
         "merge_max_tokens": 500,
         "retrieve_top_k": 1,
-        "default_max_workers": 3,
+        "default_max_workers": 4,
     },
     # Default tradeoff profile.
     "hybrid": {
@@ -74,7 +76,7 @@ RUN_PROFILE_SETTINGS: dict[str, dict[str, int]] = {
         "write_max_tokens": 1000,
         "merge_max_tokens": 700,
         "retrieve_top_k": 2,
-        "default_max_workers": 2,
+        "default_max_workers": 3,
     },
     # Highest quality, slower throughput.
     "quality": {
@@ -83,7 +85,7 @@ RUN_PROFILE_SETTINGS: dict[str, dict[str, int]] = {
         "write_max_tokens": 1400,
         "merge_max_tokens": 900,
         "retrieve_top_k": 3,
-        "default_max_workers": 1,
+        "default_max_workers": 2,
     },
 }
 
@@ -572,6 +574,78 @@ def _chapter_summary_text(chapters: list[dict]) -> str:
     return "\n\n---\n\n".join(summaries)
 
 
+def _context_hash(text: str) -> str:
+    """Short stable hash used to skip unchanged merge generations."""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _extract_source_hash(content: str) -> str | None:
+    match = REGEX_SOURCE_HASH.search(content)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _upsert_source_hash_marker(content: str, source_hash: str) -> str:
+    marker = f"<!-- source_context_hash: {source_hash} -->"
+    if REGEX_SOURCE_HASH.search(content):
+        return REGEX_SOURCE_HASH.sub(marker, content, count=1)
+
+    if content.startswith("---\n"):
+        closing = content.find("\n---\n", 4)
+        if closing != -1:
+            insert_at = closing + len("\n---\n")
+            return content[:insert_at] + marker + "\n\n" + content[insert_at:].lstrip("\n")
+
+    return marker + "\n\n" + content
+
+
+def _split_adjacent_wikilink_bullets(content: str) -> str:
+    """Split '- [[A]][[B]]' into separate bullets for each wikilink."""
+    fixed_lines: list[str] = []
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        if (stripped.startswith("- ") or stripped.startswith("* ")) and "]] [[" not in line and "]] [[" not in line.replace("]] [[", "]] [["):
+            if "]] [[" not in line and "]] [[" not in line:
+                if "]] [[" not in line and "]] [[" not in line:
+                    pass
+        if (stripped.startswith("- ") or stripped.startswith("* ")) and "]] [[" not in line and "]] [[" not in line:
+            if "]] [[" not in line and "]] [[" not in line:
+                if "]] [[" not in line:
+                    line_has_adjacent = "]] [[" in line or "]]\[\[" in line
+                else:
+                    line_has_adjacent = True
+            else:
+                line_has_adjacent = True
+        else:
+            line_has_adjacent = ("]]\[\[" in line and (stripped.startswith("- ") or stripped.startswith("* ")))
+
+        if not line_has_adjacent:
+            fixed_lines.append(line)
+            continue
+
+        indent_len = len(line) - len(stripped)
+        bullet = stripped[:2] if len(stripped) >= 2 else "- "
+        indent = " " * indent_len
+        links = REGEX_WIKILINK.findall(line)
+        if len(links) >= 2:
+            for link in links:
+                fixed_lines.append(f"{indent}{bullet}[[{link}]]")
+        else:
+            fixed_lines.append(line)
+
+    return "\n".join(fixed_lines)
+
+
+def _postprocess_generated_content(content: str) -> str:
+    """Normalize common model artifacts in generated markdown."""
+    fixed = _split_adjacent_wikilink_bullets(content)
+    fixed = re.sub(r"\]\]\s*\[\[", "]] [[", fixed)
+    fixed = re.sub(r"\bsmall encryption keys\b", "small key spaces", fixed, flags=re.IGNORECASE)
+    fixed = re.sub(r"\bsize of (?:the )?encryption key(?:s)?\b", "size of the key space", fixed, flags=re.IGNORECASE)
+    return fixed
+
+
 def _build_index(chapters: list[dict]) -> tuple[list[str], str]:
     """Run pass-1 indexing and return parsed concepts and raw index text."""
     index_text_input = "\n\n---\n\n".join(ch["content"] for ch in chapters)
@@ -608,7 +682,8 @@ def _distill_concept_context(
     max_chars: int = 4000,
     retrieve_top_k: int = 2,
     extract_max_tokens: int = 450,
-) -> str:
+    skip_extract_min_chars: int = 1400,
+) -> tuple[str, str, bool]:
     """Retrieve -> dedupe/rank -> adaptive sizing -> distill facts for one concept."""
     other_concepts = [c for c in concepts if c != concept]
     
@@ -633,8 +708,13 @@ def _distill_concept_context(
     ranked_chunks = [chunk for chunk, _ in ranked_with_scores]
     relevant_text = limit_context(ranked_chunks, max_chars=adaptive_max_chars)
 
+    # Fast path: short contexts don't benefit much from another model pass.
+    if len(relevant_text) < skip_extract_min_chars:
+        return relevant_text, relevant_text, True
+
     facts_text = extract_facts(concept, relevant_text, max_tokens=extract_max_tokens).strip()
-    return facts_text or relevant_text
+    distilled = facts_text or relevant_text
+    return distilled, relevant_text, not bool(facts_text)
 
 
 # --- Main pipeline ---
@@ -727,7 +807,7 @@ def process_pdf(
 
     def _process_single_concept(i: int, concept: str) -> dict:
         """Run pass-2 processing for one concept in isolation."""
-        distilled_facts = _distill_concept_context(
+        distilled_facts, retrieved_context, extraction_skipped = _distill_concept_context(
             all_chunks,
             concept,
             concepts,
@@ -735,6 +815,7 @@ def process_pdf(
             retrieve_top_k=profile_settings["retrieve_top_k"],
             extract_max_tokens=profile_settings["extract_max_tokens"],
         )
+        source_hash = _context_hash(retrieved_context)
         existing_path = find_existing_page(concept, subject, vault_state)
         near_dup = None
 
@@ -766,8 +847,10 @@ def process_pdf(
             content_related = set(find_related_concepts(page_content, concepts))
             active_related = sorted((graph_related | content_related) - {concept})
             page_content = inject_active_wikilinks(page_content, active_related, concepts)
+            page_content = _postprocess_generated_content(page_content)
             page_content = add_frontmatter(filename, page_content, concepts,
                                            subject=subject)
+            page_content = _upsert_source_hash_marker(page_content, source_hash)
             return {
                 "index": i,
                 "concept": concept,
@@ -776,9 +859,21 @@ def process_pdf(
                 "distilled_len": len(distilled_facts),
                 "filename": filename,
                 "content": page_content,
+                "reason": "extract-skipped" if extraction_skipped else "generated",
             }
 
         existing_content = Path(existing_path).read_text(encoding="utf-8")
+        existing_hash = _extract_source_hash(existing_content)
+        if existing_hash == source_hash:
+            return {
+                "index": i,
+                "concept": concept,
+                "kind": "skip",
+                "near_dup": near_dup,
+                "existing_path": existing_path,
+                "reason": "source-hash-match",
+            }
+
         merge_prompt = (merge_prompt_template
                         .replace("{existing_content}", existing_content)
                         .replace("{concept}", concept)
@@ -799,6 +894,7 @@ def process_pdf(
                 "kind": "skip",
                 "near_dup": near_dup,
                 "existing_path": existing_path,
+                "reason": "no-update",
             }
 
         merge_raw = fix_wikilinks(merge_raw, concepts,
@@ -807,6 +903,8 @@ def process_pdf(
         content_related = set(find_related_concepts(merge_raw, concepts))
         active_related = sorted((graph_related | content_related) - {concept})
         merge_raw = inject_active_wikilinks(merge_raw, active_related, concepts)
+        merge_raw = _postprocess_generated_content(merge_raw)
+        merge_raw = _upsert_source_hash_marker(merge_raw, source_hash)
         return {
             "index": i,
             "concept": concept,
@@ -815,6 +913,7 @@ def process_pdf(
             "existing_path": existing_path,
             "stem": Path(existing_path).stem,
             "content": merge_raw,
+            "reason": "extract-skipped" if extraction_skipped else "merged",
         }
 
     concept_workers = _resolve_max_workers(
