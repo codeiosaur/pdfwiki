@@ -1,0 +1,27 @@
+# Secret API keys
+.env
+.env.*
+*.pem
+*.key
+*.cert
+secrets.json
+config.local.py
+# Safe template
+!.env.example
+ 
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.vscode
+ 
+# Output files
+output*/
+vault/
+data/
+tmp/
+*.pdf
