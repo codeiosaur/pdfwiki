@@ -40,21 +40,19 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
     Returns a list of Fact objects.
     """
 
-    # Step 1: Ask the LLM for atomic facts as a strict JSON array.
-    prompt = (
-        "Analyze the chunk text and extract atomic facts. "
-        "Return ONLY a JSON array. "
-        "Each item must be an object with exactly two string keys: "
-        '"concept" and "content". '
-        "Do not include markdown, code fences, or extra text.\n\n"
-        f"TEXT:\n{chunk_text}"
-    )
+    # Step 1: Ask the LLM for atomic facts in strict JSON format.
+    prompt = f"""
+    Extract atomic facts from the following text.
+    Return ONLY a JSON array of objects with "concept" and "content" keys.
+    Do not include explanation text or markdown.
+    Text: {chunk_text}
+    """
 
     try:
         response = ollama_client.generate(
             model=OLLAMA_MODEL,
             prompt=prompt,
-            max_tokens=800,
+            max_tokens=500,
         )
         raw_content = response.choices[0].message.content or ""
     except Exception:
@@ -63,9 +61,18 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
     # Step 2: Parse JSON safely. If invalid, return an empty list.
     try:
         parsed = json.loads(raw_content)
-        if not isinstance(parsed, list):
-            return []
     except Exception:
+        # Handle common LLM wrappers like prose or markdown code fences.
+        start = raw_content.find("[")
+        end = raw_content.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return []
+        try:
+            parsed = json.loads(raw_content[start : end + 1])
+        except Exception:
+            return []
+
+    if not isinstance(parsed, list):
         return []
 
     # Step 3: Convert valid JSON items into Fact objects.

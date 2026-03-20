@@ -4,6 +4,7 @@ from typing import List, Optional
 import uuid
 
 from pypdf import PdfReader
+from extract.fact_extractor import extract_facts, Fact
 
 
 @dataclass
@@ -12,14 +13,6 @@ class Chunk:
     text: str
     source: str
     chapter: Optional[str]
-
-
-@dataclass
-class Fact:
-    id: str
-    concept: str
-    content: str
-    source_chunk_id: str
 
 
 def load_pdf_chunks(pdf_path: str, chunk_size_words: int = 1000) -> List[Chunk]:
@@ -51,47 +44,19 @@ def load_pdf_chunks(pdf_path: str, chunk_size_words: int = 1000) -> List[Chunk]:
     return chunks
 
 
-def stub_llm_extract_atomic_facts(chunk: Chunk) -> List[dict]:
-    # Step 3: Stub LLM call (replace with a real LLM call later).
-    return [
-        {
-            "concept": "Dummy Concept",
-            "content": f"Dummy fact extracted from chunk {chunk.id[:8]}",
-        }
-    ]
-
-
-def extract_facts_from_chunk(chunk: Chunk) -> List[Fact]:
-    # Step 4: Convert stub LLM output into Fact objects.
-    raw_facts = stub_llm_extract_atomic_facts(chunk)
-    facts: List[Fact] = []
-
-    for raw in raw_facts:
-        facts.append(
-            Fact(
-                id=str(uuid.uuid4()),
-                concept=raw["concept"],
-                content=raw["content"],
-                source_chunk_id=chunk.id,
-            )
-        )
-
-    return facts
-
-
 def run_pipeline(pdf_path: str) -> List[Fact]:
-    # Step 5: End-to-end pipeline: PDF -> Chunks -> Facts.
+    # Step 3: End-to-end pipeline: PDF -> Chunks -> Facts.
     chunks = load_pdf_chunks(pdf_path=pdf_path, chunk_size_words=1000)
 
     all_facts: List[Fact] = []
     for chunk in chunks:
-        all_facts.extend(extract_facts_from_chunk(chunk))
+        all_facts.extend(extract_facts(chunk_text=chunk.text, chunk_id=chunk.id))
 
     return all_facts
 
 
 if __name__ == "__main__":
-    # Step 6: Demo run and print first 5 facts.
+    # Step 4: Demo run and print first 5 facts.
     demo_pdf_path = "./example.pdf"
     facts = run_pipeline(demo_pdf_path)
     print(f"Extracted {len(facts)} facts")
