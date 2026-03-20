@@ -100,3 +100,24 @@ def test_run_cli_passes_master_concepts_between_pdfs(monkeypatch, tmp_path):
     # Second PDF should get concepts from first PDF
     assert concept_calls[1]['existing'] is not None
     assert "concept_from_first.pdf" in concept_calls[1]['existing']
+
+
+def test_dedupe_concepts_for_run_handles_parenthetical_alias_variants():
+    existing = ["One-Time Pad (OTP)"]
+    new_concepts = ["OTP (One-Time Pad)", "AES"]
+
+    kept, dropped = concept_quality.dedupe_concepts_for_run(new_concepts, existing_concepts=existing)
+
+    assert kept == ["AES"]
+    assert dropped == [("OTP (One-Time Pad)", "One-Time Pad (OTP)")]
+
+
+def test_dedupe_concepts_for_run_handles_symmetric_key_naming_variants():
+    existing = ["Symmetric Key Cryptography"]
+    new_concepts = ["Symmetric-Key Encryption", "Asymmetric-Key Encryption"]
+
+    kept, dropped = concept_quality.dedupe_concepts_for_run(new_concepts, existing_concepts=existing)
+
+    assert "Symmetric-Key Encryption" not in kept
+    assert ("Symmetric-Key Encryption", "Symmetric Key Cryptography") in dropped
+    assert "Asymmetric-Key Encryption" in kept

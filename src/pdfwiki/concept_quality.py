@@ -10,6 +10,25 @@ import re
 from difflib import SequenceMatcher, get_close_matches
 
 REGEX_PAREN = re.compile(r"^(.+?)\s*\((.+?)\)")
+TAIL_EQUIVALENTS = {
+    frozenset(("encryption", "cryptography")),
+    frozenset(("encryption", "cipher")),
+    frozenset(("cryptography", "cipher")),
+}
+
+
+def _tail_equivalent_with_shared_stem(norm_candidate: str, norm_existing: str) -> bool:
+    c_tokens = norm_candidate.split()
+    e_tokens = norm_existing.split()
+    if len(c_tokens) < 2 or len(e_tokens) < 2:
+        return False
+
+    # If stems align and final taxonomy term differs by known equivalent,
+    # treat as near-duplicate: "symmetric key cryptography" ~= "symmetric key encryption".
+    if c_tokens[:-1] == e_tokens[:-1] and c_tokens[-1] != e_tokens[-1]:
+        return frozenset((c_tokens[-1], e_tokens[-1])) in TAIL_EQUIVALENTS
+
+    return False
 
 
 def normalize_concept(name: str) -> str:
@@ -22,6 +41,8 @@ def normalize_concept(name: str) -> str:
     normalized = name.replace("_", " ")
     normalized = re.sub(r"%20", " ", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"\s*\([^)]+\)", "", normalized).strip().lower()
+    normalized = re.sub(r"[\-–—/:]+", " ", normalized)
+    normalized = re.sub(r"\s*(?:->|=>|→|⇒|<-|←)\s*", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
 
@@ -36,8 +57,18 @@ def concept_aliases(name: str) -> set[str]:
     aliases = {normalize_concept(name)}
     paren_match = REGEX_PAREN.match(name)
     if paren_match:
-        aliases.add(paren_match.group(1).strip().lower())
-        aliases.add(paren_match.group(2).strip().lower())
+        short = normalize_concept(paren_match.group(1).strip())
+        expanded = normalize_concept(paren_match.group(2).strip())
+        aliases.add(short)
+        aliases.add(expanded)
+
+    # Add acronym alias from phrase words (e.g. "one time pad" -> "otp").
+    norm_name = normalize_concept(name)
+    words = [w for w in re.findall(r"[a-z0-9]+", norm_name) if w]
+    if len(words) >= 2:
+        acronym = "".join(w[0] for w in words if w[0].isalnum())
+        if len(acronym) >= 2:
+            aliases.add(acronym)
     return {a for a in aliases if a}
 
 
@@ -111,6 +142,9 @@ def is_safe_near_duplicate(candidate: str, existing: str) -> bool:
     if is_token_level_typo_variant(norm_candidate, norm_existing):
         return True
 
+    if _tail_equivalent_with_shared_stem(norm_candidate, norm_existing):
+        return True
+
     alias_overlap = concept_aliases(candidate) & concept_aliases(existing)
     if alias_overlap:
         return True
@@ -133,6 +167,10 @@ def is_safe_near_duplicate(candidate: str, existing: str) -> bool:
 
 def find_near_duplicate(concept: str, existing_names: list[str], cutoff: float = 0.82) -> str | None:
     """Find a near-duplicate concept name in an existing name set."""
+    for existing in existing_names:
+        if is_safe_near_duplicate(concept, existing):
+            return existing
+
     close = get_close_matches(concept, existing_names, n=1, cutoff=cutoff)
     if close and is_safe_near_duplicate(concept, close[0]):
         return close[0]

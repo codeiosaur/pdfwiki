@@ -33,6 +33,16 @@ OLLAMA_CLIENT = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
 # Task-based routing: map task names to model selection.
 TASK_NAMES = ("cheap", "extract", "write")
 
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
 # Anthropic API: these env vars specify which Claude model to use for each task.
 # If not set, sensible defaults are provided.
 TASK_MODELS = {
@@ -55,6 +65,13 @@ OLLAMA_TASK_MODELS = {
     "cheap": os.environ.get("PDF_TO_NOTES_MODEL_CHEAP", OLLAMA_MODEL),
     "extract": os.environ.get("PDF_TO_NOTES_MODEL_EXTRACT", OLLAMA_MODEL),
     "write": os.environ.get("PDF_TO_NOTES_MODEL_WRITE", OLLAMA_MODEL),
+}
+
+# Lower temperature makes concept indexing and structured extraction more stable.
+TASK_TEMPERATURES = {
+    "cheap": _env_float("PDF_TO_NOTES_TEMPERATURE_CHEAP", 0.1),
+    "extract": _env_float("PDF_TO_NOTES_TEMPERATURE_EXTRACT", 0.1),
+    "write": _env_float("PDF_TO_NOTES_TEMPERATURE_WRITE", 0.2),
 }
 
 
@@ -136,10 +153,32 @@ def query(
 
     if PROVIDER == "anthropic":
         model = TASK_MODELS[task]
-        return _query_anthropic(prompt, system, max_tokens, model)
+        try:
+            return _query_anthropic(
+                prompt,
+                system,
+                max_tokens,
+                model,
+                temperature=TASK_TEMPERATURES[task],
+            )
+        except TypeError as exc:
+            if "temperature" not in str(exc):
+                raise
+            return _query_anthropic(prompt, system, max_tokens, model)
     if PROVIDER == "ollama":
         model = OLLAMA_TASK_MODELS.get(task) or OLLAMA_MODEL
-        return _query_ollama(prompt, system, max_tokens, model)
+        try:
+            return _query_ollama(
+                prompt,
+                system,
+                max_tokens,
+                model,
+                temperature=TASK_TEMPERATURES[task],
+            )
+        except TypeError as exc:
+            if "temperature" not in str(exc):
+                raise
+            return _query_ollama(prompt, system, max_tokens, model)
 
     raise ValueError(
         f"Unsupported PDF_TO_NOTES_PROVIDER: {PROVIDER}. "
@@ -147,7 +186,13 @@ def query(
     )
 
 
-def _query_anthropic(prompt: str, system: str, max_tokens: int, model: str) -> str:
+def _query_anthropic(
+    prompt: str,
+    system: str,
+    max_tokens: int,
+    model: str,
+    temperature: float = 0.2,
+) -> str:
     if not CLAUDE_API_KEY:
         raise EnvironmentError(
             "ANTHROPIC_API_KEY not set. "
@@ -157,6 +202,7 @@ def _query_anthropic(prompt: str, system: str, max_tokens: int, model: str) -> s
     kwargs = {
         "model": model,
         "max_tokens": max_tokens,
+        "temperature": temperature,
         "messages": [{"role": "user", "content": prompt}],
     }
     if system:
@@ -166,7 +212,13 @@ def _query_anthropic(prompt: str, system: str, max_tokens: int, model: str) -> s
     return response.content[0].text.strip()
 
 
-def _query_ollama(prompt: str, system: str, max_tokens: int, model: str) -> str:
+def _query_ollama(
+    prompt: str,
+    system: str,
+    max_tokens: int,
+    model: str,
+    temperature: float = 0.2,
+) -> str:
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -176,6 +228,7 @@ def _query_ollama(prompt: str, system: str, max_tokens: int, model: str) -> str:
         model=model,
         messages=messages,
         max_tokens=max_tokens,
+        temperature=temperature,
     )
     
     if not response.choices[0].message.content:

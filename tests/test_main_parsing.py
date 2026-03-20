@@ -89,6 +89,21 @@ RELATIONSHIPS:
     assert concepts == ["Cipher Block Chaining (CBC) Mode"]
 
 
+def test_parse_index_drops_arrow_relationship_style_candidates():
+    raw = """
+CONCEPTS:
+- RSA → Diffie-Hellman
+- OTP → Perfect Secrecy
+- AES (Advanced Encryption Standard)
+RELATIONSHIPS:
+- RSA -> Diffie-Hellman
+""".strip()
+
+    concepts, _ = main.parse_index(raw)
+
+    assert concepts == ["AES (Advanced Encryption Standard)"]
+
+
 def test_filter_concepts_with_evidence_removes_hallucinated_item():
     chunks = [
         "CBC mode uses a random IV and improves security over ECB.",
@@ -170,6 +185,48 @@ def test_find_near_duplicate_detects_normalized_and_prefix_matches():
         == "IND-CPA (Indistinguishability under Chosen Plaintext Attack)"
     )
     assert main.find_near_duplicate("Kasisky Test", vault_pages) == "Kasiski Test"
+
+
+def test_postprocess_generated_content_normalizes_setext_headings():
+    raw = """Frequency Analysis
+================
+
+Overview text.
+
+Practical Limitations
+---------------------
+
+Some detail.
+"""
+
+    fixed = main._postprocess_generated_content(raw)
+
+    assert "## Frequency Analysis" in fixed
+    assert "## Practical Limitations" in fixed
+    assert "================" not in fixed
+    assert "---------------------" not in fixed
+
+
+def test_postprocess_generated_content_normalizes_related_section():
+    raw = """## Topic
+
+Notes.
+
+Related Concepts
+-----------------
+
+### RSA
+Public key cryptosystem.
+
+### AES
+Symmetric block cipher.
+"""
+
+    fixed = main._postprocess_generated_content(raw)
+
+    assert "### Related" in fixed
+    assert "- [[RSA]]" in fixed
+    assert "- [[AES]]" in fixed
 
 
 # Currently uses cryptography terms; will add more as needed

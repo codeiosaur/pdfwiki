@@ -8,6 +8,7 @@ This module contains pass-2 concept processing:
 
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +67,8 @@ def run_concept_page_workflow(
     deps: ConceptPageWorkflowDeps,
 ) -> ConceptPageWorkflowResult:
     """Run pass-2 generation for all concepts with per-concept isolation."""
+
+    verbose = os.environ.get("PDF_TO_NOTES_VERBOSE", "0").strip().lower() in {"1", "true", "yes", "on"}
 
     def _process_single_concept(i: int, concept: str) -> dict:
         retrieved_context = deps.retrieve_context(concept)
@@ -174,11 +177,13 @@ def run_concept_page_workflow(
     concept_errors: list[tuple[int, str, str]] = []
     total_concepts = len(concepts)
     completed = 0
+    progress_every = max(1, total_concepts // 10)
 
     with ThreadPoolExecutor(max_workers=concept_workers) as executor:
         futures = {}
         for i, concept in enumerate(concepts):
-            print(f"  [{i+1}/{total_concepts}] QUEUED: {concept}", flush=True)
+            if verbose:
+                print(f"  [{i+1}/{total_concepts}] QUEUED: {concept}", flush=True)
             future = executor.submit(_process_single_concept, i, concept)
             futures[future] = (i, concept)
 
@@ -190,16 +195,21 @@ def run_concept_page_workflow(
                 completed += 1
                 kind = item.get("kind", "unknown").upper()
                 near_dup = item.get("near_dup")
-                if near_dup:
+                if verbose and near_dup:
                     print(
                         f"  [{i+1}/{total_concepts}] DONE ({completed}/{total_concepts}) "
                         f"{kind}: {concept} (near-dup: {near_dup})",
                         flush=True,
                     )
-                else:
+                elif verbose:
                     print(
                         f"  [{i+1}/{total_concepts}] DONE ({completed}/{total_concepts}) "
                         f"{kind}: {concept}",
+                        flush=True,
+                    )
+                elif completed % progress_every == 0 or completed == total_concepts:
+                    print(
+                        f"  Progress: {completed}/{total_concepts} concepts processed",
                         flush=True,
                     )
             except Exception as exc:  # pragma: no cover - runtime path

@@ -25,6 +25,7 @@ REGEX_BAD_CONCEPT_START = re.compile(
     r"^(if|when|while|because|although|though|however|therefore|thus|whereas|unless|until)\b",
     re.IGNORECASE,
 )
+REGEX_SETEXT_RULE = re.compile(r"^[=\-]{3,}\s*$")
 
 
 GENERIC_NAMES = {
@@ -110,7 +111,7 @@ def _clean_concept_candidate(text: str) -> str:
     candidate = candidate.replace("**", "").replace("__", "")
     candidate = REGEX_MARKDOWN_LINK.sub(r"\1", candidate)
 
-    if "->" in candidate or "http://" in candidate or "https://" in candidate:
+    if re.search(r"->|=>|→|⇒|<-|←", candidate) or "http://" in candidate or "https://" in candidate:
         return ""
 
     candidate = re.split(r"\s+[—–-]\s+|:\s+", candidate, maxsplit=1)[0].strip()
@@ -388,11 +389,92 @@ def _split_adjacent_wikilink_bullets(content: str) -> str:
     return "\n".join(fixed_lines)
 
 
+def _normalize_setext_headings(content: str) -> str:
+    """Convert setext headings to ATX style for consistent markdown structure."""
+    lines = content.splitlines()
+    fixed: list[str] = []
+    i = 0
+    while i < len(lines):
+        current = lines[i]
+        nxt = lines[i + 1] if i + 1 < len(lines) else None
+        if nxt is not None and REGEX_SETEXT_RULE.match(nxt.strip()) and current.strip():
+            fixed.append(f"## {current.strip()}")
+            i += 2
+            continue
+        fixed.append(current)
+        i += 1
+    return "\n".join(fixed)
+
+
+def _normalize_related_section(content: str) -> str:
+    """Normalize related sections to: '### Related' + bullet list with wikilinks."""
+    lines = content.splitlines()
+    related_idx = -1
+    for idx, line in enumerate(lines):
+        normalized = line.strip().lstrip("#").strip().lower()
+        if normalized in {"related", "related concept", "related concepts"}:
+            related_idx = idx
+            break
+
+    if related_idx == -1:
+        return content
+
+    before = "\n".join(lines[:related_idx]).rstrip()
+    tail = lines[related_idx + 1 :]
+    bullets: list[str] = []
+    seen: set[str] = set()
+
+    for line in tail:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if stripped.startswith("#"):
+            candidate = stripped.lstrip("#").strip()
+            if candidate and candidate.lower() not in {"related", "related concept", "related concepts"}:
+                wikilink = f"[[{candidate}]]"
+                if wikilink.lower() not in seen:
+                    bullets.append(f"- {wikilink}")
+                    seen.add(wikilink.lower())
+            continue
+
+        body = stripped[2:].strip() if stripped.startswith(("- ", "* ")) else stripped
+        if body.startswith("[["):
+            concept = body.split("]]", 1)[0].strip("[] ")
+            reason = body.split(":", 1)[1].strip() if ":" in body else ""
+        else:
+            concept = re.split(r"\s*:\s*|\s+-\s+", body, maxsplit=1)[0].strip()
+            reason = body.split(":", 1)[1].strip() if ":" in body else ""
+
+        if not concept:
+            continue
+
+        wikilink = f"[[{concept}]]"
+        key = wikilink.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        bullets.append(f"- {wikilink}: {reason}" if reason else f"- {wikilink}")
+
+    if not bullets:
+        return before + "\n\n### Related\n"
+    return before + "\n\n### Related\n" + "\n".join(bullets)
+
+
+def standardize_wiki_markdown(content: str) -> str:
+    """Enforce a consistent, Wikipedia-style markdown structure."""
+    fixed = _normalize_setext_headings(content)
+    fixed = _normalize_related_section(fixed)
+    fixed = re.sub(r"\n{3,}", "\n\n", fixed)
+    return fixed.strip() + "\n"
+
+
 def postprocess_generated_content(content: str) -> str:
     fixed = _split_adjacent_wikilink_bullets(content)
     fixed = re.sub(r"\]\]\s*\[\[", "]] [[", fixed)
     fixed = re.sub(r"\bsmall encryption keys\b", "small key spaces", fixed, flags=re.IGNORECASE)
     fixed = re.sub(r"\bsize of (?:the )?encryption key(?:s)?\b", "size of the key space", fixed, flags=re.IGNORECASE)
+    fixed = standardize_wiki_markdown(fixed)
     return fixed
 
 

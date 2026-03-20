@@ -24,6 +24,7 @@ import os
 import argparse
 import sys
 import hashlib
+import time
 from pathlib import Path
 from difflib import get_close_matches
 
@@ -89,10 +90,15 @@ RUN_PROFILE_SETTINGS: dict[str, dict[str, int]] = {
     "speed": {
         "context_max_chars": 2800,  # Increased: Llama 3.1 handles longer context better
         "extract_max_tokens": 350,   # Increased: allows richer fact extraction
-        "write_max_tokens": 1100,
-        "merge_max_tokens": 700,
-        "retrieve_top_k": 3,          # Increased: better fact coverage with multiple sources
-        "default_max_workers": 4,
+        "write_max_tokens": 900,
+        "merge_max_tokens": 600,
+        "retrieve_top_k": 2,
+        "default_max_workers": 2,
+        "index_max_tokens": 1600,
+        "skip_extract_min_chars": 50000,
+        "flashcards_max_tokens": 900,
+        "cheatsheet_max_tokens": 900,
+        "study_context_max_chars": 7000,
     },
     # Balanced tradeoff: quality + reasonable speed (recommended).
     "hybrid": {
@@ -102,6 +108,11 @@ RUN_PROFILE_SETTINGS: dict[str, dict[str, int]] = {
         "merge_max_tokens": 750,
         "retrieve_top_k": 3,          # Increased: handles multi-source merges better
         "default_max_workers": 3,
+        "index_max_tokens": 3000,
+        "skip_extract_min_chars": 1200,
+        "flashcards_max_tokens": 1200,
+        "cheatsheet_max_tokens": 1200,
+        "study_context_max_chars": 10000,
     },
     # Highest quality output, slower throughput.
     # For offline/non-time-sensitive processing.
@@ -112,6 +123,11 @@ RUN_PROFILE_SETTINGS: dict[str, dict[str, int]] = {
         "merge_max_tokens": 950,
         "retrieve_top_k": 4,          # Increased: comprehensive multi-source integration
         "default_max_workers": 2,
+        "index_max_tokens": 4000,
+        "skip_extract_min_chars": 900,
+        "flashcards_max_tokens": 1800,
+        "cheatsheet_max_tokens": 1800,
+        "study_context_max_chars": 14000,
     },
 }
 
@@ -170,7 +186,7 @@ def _dedupe_concepts_for_run(
     return cq_dedupe_concepts_for_run(concepts, existing_concepts)
 
 
-def _build_index(chapters: list[dict]) -> tuple[list[str], str]:
+def _build_index(chapters: list[dict], max_tokens: int = 4000) -> tuple[list[str], str]:
     """Run Pass 1 indexing and return parsed concept names plus raw model output.
 
     Inputs are chapter-level text blocks joined into one index prompt. We keep the
@@ -182,7 +198,7 @@ def _build_index(chapters: list[dict]) -> tuple[list[str], str]:
     """
     index_text_input = "\n\n---\n\n".join(ch["content"] for ch in chapters)
     index_prompt = load_prompt("index").replace("{text}", index_text_input)
-    index_raw = query(index_prompt, task="cheap", max_tokens=4000)
+    index_raw = query(index_prompt, task="cheap", max_tokens=max_tokens)
     concepts, index_text = parse_index(index_raw)
     if not concepts:
         raise ValueError(
@@ -205,6 +221,47 @@ def _collect_vault_pages(vault_state: dict) -> list[str]:
         for pages in vault_state["pages"].values()
         for page in pages.keys()
     ]
+
+def _extract_existing_concepts_from_vault(vault_state: dict) -> list[str]:
+    """Extract all concept names from existing vault state for cross-PDF deduplication.
+    
+    Useful for incremental/update mode where new PDFs should not re-extract concepts
+    that already exist in the vault from previous runs.
+    """
+    return _collect_vault_pages(vault_state)
+
+
+def _strip_frontmatter(markdown: str) -> str:
+    if markdown.startswith("---\n"):
+        closing = markdown.find("\n---\n", 4)
+        if closing != -1:
+            return markdown[closing + len("\n---\n") :].lstrip("\n")
+    return markdown
+
+
+def _build_subject_summary_from_vault(vault_state: dict, subject: str, max_chars: int) -> str:
+    subject_pages = vault_state.get("pages", {}).get(subject, {})
+    snippets: list[str] = []
+    used = 0
+    for concept in sorted(subject_pages.keys()):
+        page_path = Path(subject_pages[concept])
+        if not page_path.exists():
+            continue
+        content = _strip_frontmatter(page_path.read_text(encoding="utf-8"))
+        if not content.strip():
+            continue
+
+        # Keep a bounded sample from each page so batch study prompts stay fast.
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        sample = content[: min(1200, remaining)]
+        if sample.strip():
+            snippets.append(sample)
+            used += len(sample)
+
+    return "\n\n---\n\n".join(snippets)
+
 
 
 def _retrieve_concept_context(
@@ -338,6 +395,10 @@ def process_pdf(
     Returns:
         List of all concepts processed (for passing to next PDF in batch)
 
+    Notes:
+        In update mode, existing_concepts should include all vault concepts to prevent
+        re-extraction of concepts that already have pages in the vault. The deduplication
+        pipeline will filter them out, preventing duplicate pages.
     Determinism and safety notes:
     - per-concept work runs in parallel but results are applied in original
       concept order to keep output stable across runs.
@@ -345,14 +406,18 @@ def process_pdf(
     - unchanged existing pages are skipped via source-context hash.
     - cross-PDF deduplication prevents re-processing identical concepts.
     """
+    total_start = time.perf_counter()
     raw_stem = Path(pdf_path).stem
+    stage_timings: dict[str, float] = {}
     print(f"\n{'='*50}", flush=True)
     print(f"Processing: {raw_stem}", flush=True)
     print(f"{'='*50}", flush=True)
 
     # 1. Extract text
+    stage_start = time.perf_counter()
     print("\n[1/6] Extracting text from PDF...", flush=True)
     full_text = extract_text(pdf_path)
+    stage_timings["extract"] = time.perf_counter() - stage_start
 
     profile_name, profile_settings = _resolve_run_profile(profile)
     print(
@@ -366,21 +431,26 @@ def process_pdf(
     )
 
     # 2. Split into chapters and chunk each one
+    stage_start = time.perf_counter()
     print("\n[2/6] Splitting into chapters and chunking...", flush=True)
     chapters = split_into_chapters(full_text)
     # Smart chunking auto-selects page/headings/paragraph/size strategy.
     all_chunks = smart_chunk(full_text, pages_per_chunk=2)
-    print(f"  Total chunks: {len(all_chunks)}", flush=True)
+    stage_timings["chunk"] = time.perf_counter() - stage_start
 
     # For flashcards/cheatsheet: compressed summary (first chunk per chapter)
     summary_text = _chapter_summary_text(chapters)
 
     # 3. Build concept index — Pass 1
+    stage_start = time.perf_counter()
     print("\n[3/6] Building concept index (Pass 1)...", flush=True)
     index_result = run_concept_indexing(
         chapters=chapters,
         all_chunks=all_chunks,
-        build_index=_build_index,
+        build_index=lambda chapter_list: _build_index(
+            chapter_list,
+            max_tokens=profile_settings["index_max_tokens"],
+        ),
         filter_concepts_with_evidence=_filter_concepts_with_evidence,
         dedupe_concepts_for_run=_dedupe_concepts_for_run,
         existing_concepts=existing_concepts,
@@ -401,16 +471,23 @@ def process_pdf(
         if len(deduped_pairs) > 8:
             preview += ", ..."
         print(f"  [quality] deduped {len(deduped_pairs)} near-duplicate concepts: {preview}", flush=True)
-    print(f"  Found {len(concepts)} concepts: {', '.join(concepts)}", flush=True)
+    concept_preview = ", ".join(concepts[:12])
+    if len(concepts) > 12:
+        concept_preview += ", ..."
+    print(f"  Found {len(concepts)} concepts: {concept_preview}", flush=True)
+    stage_timings["index"] = time.perf_counter() - stage_start
 
     subject = _get_subject(raw_stem, concepts, subject_override, batch_mode)
 
     # Build concept graph for active linking (system decides what should link)
+    stage_start = time.perf_counter()
     print("\n[Pass 1.5] Building concept relationship graph...", flush=True)
     concept_graph = build_concept_graph(concepts, all_chunks)
     print(f"  Concept relationships mapped", flush=True)
+    stage_timings["graph"] = time.perf_counter() - stage_start
 
     # 4. Generate wiki pages — Pass 2 (incremental: new / merge / skip)
+    stage_start = time.perf_counter()
     print(f"\n[4/6] Processing {len(concepts)} concepts (Pass 2)...", flush=True)
     vault_state = load_vault_state(output_dir)
     all_vault_pages = _collect_vault_pages(vault_state)
@@ -440,12 +517,17 @@ def process_pdf(
             concept,
             text,
             extract_max_tokens=profile_settings["extract_max_tokens"],
+            skip_extract_min_chars=profile_settings["skip_extract_min_chars"],
         ),
         context_hash=_context_hash,
         find_existing_page=lambda concept: find_existing_page(concept, subject, vault_state),
         find_near_duplicate=find_near_duplicate,
         extract_source_hash=_extract_source_hash,
-        query_with_quality_retry=_query_with_quality_retry,
+        query_with_quality_retry=(
+            (lambda prompt, max_tokens, task="write": query(prompt, task=task, max_tokens=max_tokens))
+            if profile_name == "speed"
+            else _query_with_quality_retry
+        ),
         parse_wiki_page=parse_wiki_page,
         fix_wikilinks=fix_wikilinks,
         find_related_concepts=find_related_concepts,
@@ -468,6 +550,7 @@ def process_pdf(
         resolve_max_workers=_resolve_max_workers,
         deps=pass2_deps,
     )
+    stage_timings["pass2"] = time.perf_counter() - stage_start
 
     wiki_pages = pass2_result.wiki_pages
     merged_pages = pass2_result.merged_pages
@@ -496,23 +579,46 @@ def process_pdf(
         write_flashcards=write_flashcards,
         write_cheatsheet=write_cheatsheet,
     )
-    maybe_regenerate_moc(
-        added_new=added_new,
-        output_dir=output_dir,
-        subject=subject,
-        concepts=concepts,
-        index_text=index_text,
-        deps=output_deps,
-    )
-    generate_study_aids(
-        output_dir=output_dir,
-        subject=subject,
-        summary_text=summary_text,
-        deps=output_deps,
-    )
+    stage_start = time.perf_counter()
+    if batch_mode:
+        print("\n[5/6] Deferring MOC regeneration to end of batch...", flush=True)
+    else:
+        maybe_regenerate_moc(
+            added_new=added_new,
+            output_dir=output_dir,
+            subject=subject,
+            concepts=concepts,
+            index_text=index_text,
+            deps=output_deps,
+        )
+    if batch_mode:
+        print("\n[6/6] Deferring flashcards/cheatsheet generation to end of batch...", flush=True)
+    else:
+        generate_study_aids(
+            output_dir=output_dir,
+            subject=subject,
+            summary_text=summary_text,
+            flashcards_max_tokens=profile_settings["flashcards_max_tokens"],
+            cheatsheet_max_tokens=profile_settings["cheatsheet_max_tokens"],
+            summary_max_chars=profile_settings["study_context_max_chars"],
+            deps=output_deps,
+        )
+    stage_timings["study_outputs"] = time.perf_counter() - stage_start
 
     print(f"\nDone! Output written to: {output_dir}/")
     print(f"Wiki pages: {len(wiki_pages)}")
+    total_elapsed = time.perf_counter() - total_start
+    print(
+        "Timing (seconds): "
+        + ", ".join(
+            f"{name}={stage_timings.get(name, 0.0):.2f}"
+            for name in ["extract", "chunk", "index", "graph", "pass2", "study_outputs"]
+        )
+        + f", total={total_elapsed:.2f}",
+        flush=True,
+    )
+    slowest_stage = max(stage_timings.items(), key=lambda item: item[1])[0] if stage_timings else "unknown"
+    print(f"  Bottleneck hint: slowest stage is '{slowest_stage}'", flush=True)
     
     # Return master concept list for next PDF in batch
     master_concepts = (existing_concepts or []) + concepts
@@ -542,6 +648,9 @@ Examples:
 
   # Glob (shell expands *.pdf before passing to argparse)
   python main.py *.pdf --vault ./vault
+
+    # Update existing wiki with new PDF (incremental mode)
+    python main.py NewTopic.pdf --vault ./vault --update
         """
     )
     parser.add_argument("pdfs", nargs="+", help="One or more PDF files to process")
@@ -552,6 +661,9 @@ Examples:
                         help="Subject override. Single PDF only.")
     parser.add_argument("--batch", action="store_true",
                         help="Never prompt. Unknown subjects go to Unsorted/.")
+    parser.add_argument("--update", action="store_true",
+                        help="Update mode: reuse existing vault concepts to prevent duplicates "
+                             "when adding new PDFs. Useful for adding more documents to an existing wiki.")
     parser.add_argument(
         "--provider",
         choices=["anthropic", "ollama"],
@@ -598,6 +710,15 @@ Examples:
     batch = args.batch or len(args.pdfs) > 1
     failed = []
     master_concepts: list[str] | None = None
+    # In update mode, pre-load existing vault concepts to avoid duplicate extraction
+    if args.update:
+        vault_state = load_vault_state(vault)
+        master_concepts = _extract_existing_concepts_from_vault(vault_state)
+        if master_concepts:
+            print(f"\n[Update Mode] Loaded {len(master_concepts)} existing concepts from vault")
+            print(f"  Concepts: {', '.join(master_concepts[:10])}"
+                  f"{'...' if len(master_concepts) > 10 else ''}")
+
 
     for pdf_path in args.pdfs:
         try:
@@ -608,7 +729,7 @@ Examples:
                 batch_mode=batch,
                 max_workers=args.max_workers,
                 profile=args.profile,
-                existing_concepts=master_concepts if batch else None,
+                existing_concepts=master_concepts if (batch or args.update) else None,
             )
         except Exception as e:
             print(f"\nERROR processing {pdf_path}: {e}")
@@ -620,7 +741,55 @@ Examples:
         for path, err in failed:
             print(f"  {path}: {err}")
         return 1
-    elif len(args.pdfs) > 1:
+    elif batch:
+        _, profile_settings = _resolve_run_profile(args.profile)
+        vault_state = load_vault_state(vault)
+        output_deps = StudyOutputDeps(
+            load_vault_state=load_vault_state,
+            load_prompt=load_prompt,
+            query=query,
+            parse_wiki_page=parse_wiki_page,
+            add_frontmatter=add_frontmatter,
+            write_flashcards=write_flashcards,
+            write_cheatsheet=write_cheatsheet,
+        )
+
+        if vault_state.get("subjects"):
+            print("\n[Batch Final] Regenerating MOC once per subject...")
+            for subject in sorted(vault_state["subjects"]):
+                subject_concepts = sorted(vault_state.get("pages", {}).get(subject, {}).keys())
+                if not subject_concepts:
+                    continue
+                maybe_regenerate_moc(
+                    added_new=True,
+                    output_dir=vault,
+                    subject=subject,
+                    concepts=subject_concepts,
+                    index_text="",
+                    deps=output_deps,
+                )
+
+        if vault_state.get("subjects"):
+            print("\n[Batch Final] Generating flashcards/cheatsheet once per subject...")
+            for subject in sorted(vault_state["subjects"]):
+                summary_text = _build_subject_summary_from_vault(
+                    vault_state,
+                    subject,
+                    max_chars=profile_settings["study_context_max_chars"],
+                )
+                if not summary_text.strip():
+                    continue
+                generate_study_aids(
+                    output_dir=vault,
+                    subject=subject,
+                    summary_text=summary_text,
+                    flashcards_max_tokens=profile_settings["flashcards_max_tokens"],
+                    cheatsheet_max_tokens=profile_settings["cheatsheet_max_tokens"],
+                    summary_max_chars=profile_settings["study_context_max_chars"],
+                    deps=output_deps,
+                )
+
+    if len(args.pdfs) > 1:
         print(f"\n{'='*50}")
         print(f"All {len(args.pdfs)} PDFs processed successfully.")
         if master_concepts:

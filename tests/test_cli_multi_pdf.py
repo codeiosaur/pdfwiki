@@ -82,3 +82,47 @@ def test_run_cli_passes_profile_to_process_pdf(monkeypatch, tmp_path):
 
     assert code == 0
     assert seen["profile"] == "speed"
+
+
+def test_run_cli_batch_generates_study_aids_once_at_end(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_process_pdf(pdf_path, output_dir, subject_override="", batch_mode=False, max_workers=None, profile=None, existing_concepts=None):
+        calls.append(pdf_path)
+        return (existing_concepts or []) + [pdf_path]
+
+    page_a = tmp_path / "Cryptography" / "A.md"
+    page_b = tmp_path / "Cryptography" / "B.md"
+    page_a.parent.mkdir(parents=True, exist_ok=True)
+    page_a.write_text("---\nsource: \"Cryptography\"\n---\n# A\ncontent a", encoding="utf-8")
+    page_b.write_text("# B\ncontent b", encoding="utf-8")
+
+    study_calls = []
+    moc_calls = []
+    monkeypatch.setattr(main, "process_pdf", fake_process_pdf)
+    monkeypatch.setattr(
+        main,
+        "load_vault_state",
+        lambda *_a, **_k: {
+            "subjects": ["Cryptography"],
+            "pages": {"Cryptography": {"A": str(page_a), "B": str(page_b)}},
+            "aliases": {},
+        },
+    )
+    monkeypatch.setattr(
+        main,
+        "generate_study_aids",
+        lambda **kwargs: study_calls.append(kwargs["subject"]),
+    )
+    monkeypatch.setattr(
+        main,
+        "maybe_regenerate_moc",
+        lambda **kwargs: moc_calls.append(kwargs["subject"]),
+    )
+
+    code = main.run_cli(["one.pdf", "two.pdf", "--vault", str(tmp_path), "--batch", "--profile", "speed"])
+
+    assert code == 0
+    assert calls == ["one.pdf", "two.pdf"]
+    assert study_calls == ["Cryptography"]
+    assert moc_calls == ["Cryptography"]
