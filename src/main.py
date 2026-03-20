@@ -60,5 +60,5 @@ if __name__ == "__main__":
     demo_pdf_path = "./example.pdf"
     facts = run_pipeline(demo_pdf_path)
     print(f"Extracted {len(facts)} facts")
-    for fact in facts[:5]:
+    for fact in facts:
         print(f"{fact.id} | {fact.concept} | {fact.content} | chunk={fact.source_chunk_id}")
