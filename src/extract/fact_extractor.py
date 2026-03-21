@@ -42,10 +42,23 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
 
     # Step 1: Ask the LLM for atomic facts in strict JSON format.
     prompt = f"""
-    Extract atomic facts from the following text.
-    Return ONLY a JSON array of objects with "concept" and "content" keys.
-    Do not include explanation text or markdown.
-    Text: {chunk_text}
+    Extract atomic facts from the text.
+
+    For each fact:
+    - Assign a concept name that is SHORT and CANONICAL (1–3 words)
+    - Use standard textbook terminology
+    - DO NOT invent new concepts
+    - DO NOT include meta concepts like "terminology", "example", "note"
+    - DO NOT include implementation details (e.g., browsers, OS, etc.)
+    - Prefer commonly accepted names
+
+    Return ONLY a JSON array:
+    [
+      {{"concept": "...", "content": "..."}}
+    ]
+
+    Text:
+    {chunk_text}
     """
 
     try:
@@ -60,7 +73,7 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
 
     # Step 2: Parse JSON safely. If invalid, return an empty list.
     try:
-        parsed = json.loads(raw_content)
+        parsed_data = json.loads(raw_content)
     except Exception:
         # Handle common LLM wrappers like prose or markdown code fences.
         start = raw_content.find("[")
@@ -68,16 +81,16 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
         if start == -1 or end == -1 or end <= start:
             return []
         try:
-            parsed = json.loads(raw_content[start : end + 1])
+            parsed_data = json.loads(raw_content[start : end + 1])
         except Exception:
             return []
 
-    if not isinstance(parsed, list):
+    if not isinstance(parsed_data, list):
         return []
 
     # Step 3: Convert valid JSON items into Fact objects.
     facts: List[Fact] = []
-    for item in parsed:
+    for item in parsed_data:
         if not isinstance(item, dict):
             continue
 
