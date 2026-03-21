@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+import json
 import re
 import uuid
 
 from pypdf import PdfReader
-from extract.fact_extractor import extract_facts, Fact
+from extract.fact_extractor import extract_facts, Fact, ollama_client, OLLAMA_MODEL
 
 
 @dataclass
@@ -73,8 +74,16 @@ def normalize_concept(concept: str) -> str:
 
     normalized_tokens: List[str] = []
     for token in cleaned.split():
-        # Basic plural-to-singular normalization.
-        singular = token[:-1] if token.endswith("s") and len(token) > 1 else token
+        # Controlled plural-to-singular normalization.
+        singular = token
+        if token.endswith("ies") and len(token) > 3:
+            singular = token[:-3] + "y"
+        elif (
+            token.endswith("s")
+            and len(token) > 4
+            and not token.endswith(("ss", "is", "us"))
+        ):
+            singular = token[:-1]
 
         # Preserve acronym canonical forms.
         if token in acronym_map:
@@ -90,6 +99,53 @@ def normalize_concept(concept: str) -> str:
         normalized_tokens.append(singular.title())
 
     return " ".join(normalized_tokens)
+
+
+def canonicalize_concepts(concepts: List[str]) -> dict[str, Optional[str]]:
+    if not concepts:
+        return {}
+
+    # Step 1: Send all concepts in one batched prompt.
+    prompt = (
+        "Canonicalize the following concept names to standard textbook terminology. "
+        "Fix spelling and formatting. If a concept is hallucinated/invalid, map it to null. "
+        "Return ONLY a JSON object where keys are original names and values are canonical names or null.\n\n"
+        f"Concepts:\n{json.dumps(concepts, ensure_ascii=True)}"
+    )
+
+    try:
+        response = ollama_client.generate(
+            model=OLLAMA_MODEL,
+            prompt=prompt,
+            max_tokens=600,
+        )
+        raw_content = response.choices[0].message.content or ""
+    except Exception:
+        return {name: None for name in concepts}
+
+    # Step 2: Parse JSON safely.
+    try:
+        parsed = json.loads(raw_content)
+    except Exception:
+        start = raw_content.find("{")
+        end = raw_content.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return {name: None for name in concepts}
+        try:
+            parsed = json.loads(raw_content[start : end + 1])
+        except Exception:
+            return {name: None for name in concepts}
+
+    if not isinstance(parsed, dict):
+        return {name: None for name in concepts}
+
+    # Step 3: Convert parsed mapping to original_name -> canonical_name|None.
+    result: dict[str, Optional[str]] = {}
+    for name in concepts:
+        value = parsed.get(name)
+        result[name] = value if isinstance(value, str) else None
+
+    return result
 
 
 def group_facts_by_concept(facts: List[Fact]) -> dict[str, List[Fact]]:
