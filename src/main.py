@@ -9,6 +9,9 @@ from pypdf import PdfReader
 from extract.fact_extractor import extract_facts, Fact, ollama_client, OLLAMA_MODEL
 
 
+CANONICAL_CACHE_PATH = Path(__file__).with_name("canonical_cache.json")
+
+
 @dataclass
 class Chunk:
     id: str
@@ -59,59 +62,74 @@ def run_pipeline(pdf_path: str) -> List[Fact]:
 
 def normalize_concept(concept: str) -> str:
     cleaned = concept.lower().strip()
-
-    # Remove punctuation and normalize separators.
-    cleaned = re.sub(r"[-()]", " ", cleaned)
     cleaned = re.sub(r"[^a-z0-9\s]", " ", cleaned)
+    tokens = cleaned.split()
+    return " ".join(token.title() for token in tokens)
 
-    acronym_map = {
-        "aes": "AES",
-        "tls": "TLS",
-        "rsa": "RSA",
-        "ocsp": "OCSP",
-    }
-    filler_words = {"the", "a", "an", "algorithm", "method", "system", "process", "mechanism"}
 
-    normalized_tokens: List[str] = []
-    for token in cleaned.split():
-        # Controlled plural-to-singular normalization.
-        singular = token
-        if token.endswith("ies") and len(token) > 3:
-            singular = token[:-3] + "y"
-        elif (
-            token.endswith("s")
-            and len(token) > 4
-            and not token.endswith(("ss", "is", "us"))
-        ):
-            singular = token[:-1]
+def load_canonical_cache() -> dict[str, Optional[str]]:
+    if not CANONICAL_CACHE_PATH.exists():
+        return {}
 
-        # Preserve acronym canonical forms.
-        if token in acronym_map:
-            normalized_tokens.append(acronym_map[token])
+    try:
+        with CANONICAL_CACHE_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    cache: dict[str, Optional[str]] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
             continue
-        if singular in acronym_map:
-            normalized_tokens.append(acronym_map[singular])
-            continue
+        cache[key] = value if isinstance(value, str) else None
+    return cache
 
-        if singular in filler_words:
-            continue
 
-        normalized_tokens.append(singular.title())
-
-    return " ".join(normalized_tokens)
+def save_canonical_cache(cache: dict[str, Optional[str]]) -> None:
+    with CANONICAL_CACHE_PATH.open("w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2, ensure_ascii=False)
 
 
 def canonicalize_concepts(concepts: List[str]) -> dict[str, Optional[str]]:
     if not concepts:
         return {}
 
-    # Step 1: Send all concepts in one batched prompt.
-    prompt = (
-        "Canonicalize the following concept names to standard textbook terminology. "
-        "Fix spelling and formatting. If a concept is hallucinated/invalid, map it to null. "
-        "Return ONLY a JSON object where keys are original names and values are canonical names or null.\n\n"
-        f"Concepts:\n{json.dumps(concepts, ensure_ascii=True)}"
-    )
+    # Step 0: Load cache and only request uncached concepts.
+    cache = load_canonical_cache()
+    missing = [concept for concept in concepts if concept not in cache]
+
+    if not missing:
+        return {name: cache.get(name) for name in concepts}
+
+    # Step 1: Send uncached concepts in one batched prompt.
+    prompt = (f"""
+    You are given concept names extracted from academic material.
+
+    Your task:
+    - Fix spelling errors
+    - Fix possessives (e.g., Shannon, Euler, Kerckhoffs)
+    - Normalize to standard terminology
+    - Remove invalid or vague concepts (return null)
+
+    Rules:
+    - Do NOT merge different concepts
+    - Do NOT invent new concepts
+    - Preserve meaning exactly
+    - Keep names concise (1–4 words)
+
+    Return ONLY valid JSON mapping original → fixed (or null):
+
+    {{
+      "Concept A": "Fixed Name",
+      "Concept B": null
+    }}
+
+    Concepts:
+    {chr(10).join("- " + c for c in missing)}
+    """)
 
     try:
         response = ollama_client.generate(
@@ -121,7 +139,10 @@ def canonicalize_concepts(concepts: List[str]) -> dict[str, Optional[str]]:
         )
         raw_content = response.choices[0].message.content or ""
     except Exception:
-        return {name: None for name in concepts}
+        for name in missing:
+            cache[name] = None
+        save_canonical_cache(cache)
+        return {name: cache.get(name) for name in concepts}
 
     # Step 2: Parse JSON safely.
     try:
@@ -130,22 +151,77 @@ def canonicalize_concepts(concepts: List[str]) -> dict[str, Optional[str]]:
         start = raw_content.find("{")
         end = raw_content.rfind("}")
         if start == -1 or end == -1 or end <= start:
-            return {name: None for name in concepts}
+            for name in missing:
+                cache[name] = None
+            save_canonical_cache(cache)
+            return {name: cache.get(name) for name in concepts}
         try:
             parsed = json.loads(raw_content[start : end + 1])
         except Exception:
-            return {name: None for name in concepts}
+            for name in missing:
+                cache[name] = None
+            save_canonical_cache(cache)
+            return {name: cache.get(name) for name in concepts}
 
     if not isinstance(parsed, dict):
-        return {name: None for name in concepts}
+        for name in missing:
+            cache[name] = None
+        save_canonical_cache(cache)
+        return {name: cache.get(name) for name in concepts}
 
-    # Step 3: Convert parsed mapping to original_name -> canonical_name|None.
-    result: dict[str, Optional[str]] = {}
-    for name in concepts:
+    # Step 3: Update cache with LLM results and save.
+    for name in missing:
         value = parsed.get(name)
-        result[name] = value if isinstance(value, str) else None
+        cache[name] = value if isinstance(value, str) else None
 
-    return result
+    save_canonical_cache(cache)
+    return {name: cache.get(name) for name in concepts}
+
+
+def needs_canonicalization(concept: str) -> bool:
+    normalized = concept.strip()
+    lowered = normalized.lower()
+
+    # Rule 1a: single-letter tokens (e.g., "S").
+    if any(len(token) == 1 for token in re.findall(r"[A-Za-z]+", normalized)):
+        return True
+
+    # Rule 1b: unusual capitalization in alphabetic tokens.
+    alpha_tokens = re.findall(r"[A-Za-z]+", normalized)
+    for token in alpha_tokens:
+        if not (token.islower() or token.istitle() or token.isupper()):
+            return True
+
+    # Rule 2: concept has more than 3 words.
+    if len(lowered.split()) > 3:
+        return True
+
+    # Rule 3: concept contains filler phrases.
+    filler_phrases = {
+        "goal of",
+        "impact",
+        "effects of",
+        "importance of",
+        "role of",
+    }
+    if any(phrase in lowered for phrase in filler_phrases):
+        return True
+
+    # Rule 1c: likely misspellings via uncommon-word heuristic.
+    common_words = {
+        "aes", "rsa", "tls", "ocsp", "ssl", "md5", "sha", "sha1", "sha2", "sha3",
+        "cryptography", "crypto", "encryption", "decryption", "cipher", "hash", "signature",
+        "certificate", "protocol", "attack", "mode", "padding", "nonce", "key", "keys",
+        "symmetric", "asymmetric", "public", "private", "one", "time", "pad", "block",
+        "stream", "diffie", "hellman", "authority", "revocation", "list", "security",
+        "transport", "layer", "standard", "algorithm", "method", "system", "process",
+        "mechanism", "function",
+    }
+    for token in re.findall(r"[a-z]+", lowered):
+        if len(token) >= 5 and token not in common_words:
+            return True
+
+    return False
 
 
 def group_facts_by_concept(facts: List[Fact]) -> dict[str, List[Fact]]:
@@ -221,5 +297,24 @@ if __name__ == "__main__":
     
     grouped = group_facts_by_concept(all_facts)
 
-    for concept, facts in list(grouped.items()):
+    # Step 5: Canonicalize only concepts that need fixing.
+    concept_names = list(grouped.keys())
+    concepts_to_fix = [name for name in concept_names if needs_canonicalization(name)]
+    canonical_map = canonicalize_concepts(concepts_to_fix)
+
+    # Step 6: Build final grouped map with canonical names.
+    final_grouped: dict[str, List[Fact]] = {}
+    for concept, facts in grouped.items():
+        if concept in canonical_map:
+            canonical_name = canonical_map[concept]
+            if canonical_name is None:
+                continue
+            target_name = canonical_name
+        else:
+            target_name = concept
+
+        final_grouped.setdefault(target_name, []).extend(facts)
+
+    # Step 7: Print final grouped concept counts.
+    for concept, facts in final_grouped.items():
         print(concept, "->", len(facts))
