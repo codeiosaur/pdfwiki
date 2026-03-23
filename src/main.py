@@ -10,6 +10,7 @@ from extract.fact_extractor import extract_facts, Fact, ollama_client, OLLAMA_MO
 
 
 CANONICAL_CACHE_PATH = Path(__file__).with_name("canonical_cache.json")
+EVALUATION_CACHE_PATH = Path(__file__).with_name("evaluation_metrics.json")
 
 
 @dataclass
@@ -179,47 +180,29 @@ def canonicalize_concepts(concepts: List[str]) -> dict[str, Optional[str]]:
 
 
 def needs_canonicalization(concept: str) -> bool:
-    normalized = concept.strip()
-    lowered = normalized.lower()
-
-    # Rule 1a: single-letter tokens (e.g., "S").
-    if any(len(token) == 1 for token in re.findall(r"[A-Za-z]+", normalized)):
+    # Rule 1: single-letter token (e.g., "S").
+    if any(len(token) == 1 for token in re.findall(r"[A-Za-z]+", concept)):
         return True
 
-    # Rule 1b: unusual capitalization in alphabetic tokens.
-    alpha_tokens = re.findall(r"[A-Za-z]+", normalized)
-    for token in alpha_tokens:
-        if not (token.islower() or token.istitle() or token.isupper()):
+    # Rule 2: unusual spacing or punctuation artifacts.
+    if concept != concept.strip():
+        return True
+    if re.search(r"\s{2,}", concept):
+        return True
+    if re.search(r"[\-_/]{2,}|[()]{2,}|[,:;.]\s*[,:;.]", concept):
+        return True
+
+    # Rule 3: repeated words (case-insensitive).
+    words = re.findall(r"[A-Za-z]+", concept.lower())
+    for i in range(1, len(words)):
+        if words[i] == words[i - 1]:
             return True
 
-    # Rule 2: concept has more than 3 words.
-    if len(lowered.split()) > 3:
-        return True
-
-    # Rule 3: concept contains filler phrases.
-    filler_phrases = {
-        "goal of",
-        "impact",
-        "effects of",
-        "importance of",
-        "role of",
-    }
-    if any(phrase in lowered for phrase in filler_phrases):
-        return True
-
-    # Rule 1c: likely misspellings via uncommon-word heuristic.
-    common_words = {
-        "aes", "rsa", "tls", "ocsp", "ssl", "md5", "sha", "sha1", "sha2", "sha3",
-        "cryptography", "crypto", "encryption", "decryption", "cipher", "hash", "signature",
-        "certificate", "protocol", "attack", "mode", "padding", "nonce", "key", "keys",
-        "symmetric", "asymmetric", "public", "private", "one", "time", "pad", "block",
-        "stream", "diffie", "hellman", "authority", "revocation", "list", "security",
-        "transport", "layer", "standard", "algorithm", "method", "system", "process",
-        "mechanism", "function",
-    }
-    for token in re.findall(r"[a-z]+", lowered):
-        if len(token) >= 5 and token not in common_words:
-            return True
+    # Rule 4: mixed casing inside a word (e.g., eCb, iNd).
+    for token in re.findall(r"[A-Za-z]+", concept):
+        if any(c.islower() for c in token) and any(c.isupper() for c in token):
+            if not token.istitle():
+                return True
 
     return False
 
@@ -230,6 +213,123 @@ def group_facts_by_concept(facts: List[Fact]) -> dict[str, List[Fact]]:
         concept_key = normalize_concept(fact.concept)
         grouped.setdefault(concept_key, []).append(fact)
     return grouped
+
+
+def evaluate_concepts(grouped: dict[str, list]) -> dict:
+    concepts = list(grouped.keys())
+    total_concepts = len(concepts)
+    total_facts = sum(len(grouped[concept]) for concept in concepts)
+    avg_facts_per_concept = (total_facts / total_concepts) if total_concepts else 0.0
+
+    singleton_count = sum(1 for concept in concepts if len(grouped[concept]) == 1)
+    singleton_ratio = (singleton_count / total_concepts * 100.0) if total_concepts else 0.0
+
+    suspicious_concepts: List[str] = []
+    filler_words = {"goals", "impact", "effects"}
+    lowercase_acronyms = {"Aes", "Des", "Tls"}
+
+    for concept in concepts:
+        words = re.findall(r"[A-Za-z]+", concept)
+        words_lower = [w.lower() for w in words]
+
+        has_filler = any(w in filler_words for w in words_lower)
+        has_plural = any(w.endswith("s") and len(w) > 1 for w in words_lower)
+        has_lowercase_acronym = any(w in lowercase_acronyms for w in words)
+
+        if has_filler or has_plural or has_lowercase_acronym:
+            suspicious_concepts.append(concept)
+
+    near_duplicates: List[tuple[str, str]] = []
+
+    def differs_by_one_word(left: str, right: str) -> bool:
+        left_words = left.lower().split()
+        right_words = right.lower().split()
+
+        if abs(len(left_words) - len(right_words)) == 1:
+            shorter = left_words if len(left_words) < len(right_words) else right_words
+            longer = right_words if len(right_words) > len(left_words) else left_words
+            return all(word in longer for word in shorter)
+
+        if len(left_words) == len(right_words):
+            mismatches = sum(1 for a, b in zip(left_words, right_words) if a != b)
+            return mismatches == 1
+
+        return False
+
+    for i, left in enumerate(concepts):
+        for right in concepts[i + 1 :]:
+            left_l = left.lower()
+            right_l = right.lower()
+            is_substring_match = left_l in right_l or right_l in left_l
+            if is_substring_match or differs_by_one_word(left, right):
+                near_duplicates.append((left, right))
+
+    return {
+        "total_concepts": total_concepts,
+        "avg_facts_per_concept": avg_facts_per_concept,
+        "singleton_ratio": singleton_ratio,
+        "suspicious_concepts": suspicious_concepts,
+        "near_duplicates": near_duplicates,
+    }
+
+
+def load_previous_evaluation() -> Optional[dict]:
+    if not EVALUATION_CACHE_PATH.exists():
+        return None
+
+    try:
+        with EVALUATION_CACHE_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+
+    return data if isinstance(data, dict) else None
+
+
+def save_evaluation_snapshot(evaluation: dict) -> None:
+    with EVALUATION_CACHE_PATH.open("w", encoding="utf-8") as f:
+        json.dump(evaluation, f, indent=2, ensure_ascii=False)
+
+
+def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None:
+    warnings: List[str] = []
+
+    # Assertion 1: singleton_ratio should be < 0.8.
+    singleton_value = current.get("singleton_ratio", 0.0)
+    if isinstance(singleton_value, (int, float)):
+        singleton_ratio = singleton_value / 100.0 if singleton_value > 1 else singleton_value
+        if singleton_ratio >= 0.8:
+            warnings.append(
+                f"singleton_ratio is high ({singleton_ratio:.2f}); expected < 0.8"
+            )
+
+    if previous is not None:
+        # Assertion 2: suspicious_concepts count should decrease over time.
+        current_suspicious = current.get("suspicious_concepts", [])
+        previous_suspicious = previous.get("suspicious_concepts", [])
+        current_count = len(current_suspicious) if isinstance(current_suspicious, list) else 0
+        previous_count = len(previous_suspicious) if isinstance(previous_suspicious, list) else 0
+
+        if current_count >= previous_count and previous_count > 0:
+            warnings.append(
+                f"suspicious_concepts did not decrease ({previous_count} -> {current_count})"
+            )
+
+        # Assertion 3: total_concepts should not drop by more than 30%.
+        current_total = current.get("total_concepts", 0)
+        previous_total = previous.get("total_concepts", 0)
+        if (
+            isinstance(current_total, int)
+            and isinstance(previous_total, int)
+            and previous_total > 0
+            and current_total < previous_total * 0.7
+        ):
+            warnings.append(
+                f"total_concepts dropped too much ({previous_total} -> {current_total})"
+            )
+
+    for warning in warnings:
+        print(f"WARNING: {warning}")
 
 
 def _concepts_are_similar(left: str, right: str) -> bool:
@@ -318,3 +418,14 @@ if __name__ == "__main__":
     # Step 7: Print final grouped concept counts.
     for concept, facts in final_grouped.items():
         print(concept, "->", len(facts))
+
+    eval_result = evaluate_concepts(final_grouped)
+
+    # Evaluation
+    print("\n=== EVALUATION ===")
+    for k, v in eval_result.items():
+        print(k, ":", v)
+
+    previous_eval = load_previous_evaluation()
+    check_evaluation_assertions(eval_result, previous_eval)
+    save_evaluation_snapshot(eval_result)
