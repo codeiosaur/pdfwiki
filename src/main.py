@@ -62,10 +62,163 @@ def run_pipeline(pdf_path: str) -> List[Fact]:
 
 
 def normalize_concept(concept: str) -> str:
-    cleaned = concept.lower().strip()
-    cleaned = re.sub(r"[^a-z0-9\s]", " ", cleaned)
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", concept.strip())
+    raw_tokens = cleaned.split()
+
+    normalized_tokens: List[str] = []
+    for token in raw_tokens:
+        if token.isalpha() and token.isupper() and len(token) <= 6:
+            normalized_tokens.append(token)
+        else:
+            normalized_tokens.append(token.lower().title())
+
+    return " ".join(normalized_tokens)
+
+
+def tokenize_for_matching(name: str) -> list[str]:
+    """
+    Convert a concept name into normalized tokens for comparison ONLY.
+    Do NOT return a string. Do NOT modify original input.
+
+    Rules:
+    - lowercase
+    - remove punctuation EXCEPT apostrophes inside words
+    - split into tokens
+    - collapse whitespace
+    - singularize ONLY the last token if it ends with 's' and length > 3
+
+    Examples:
+    - "Certificate Authorities" -> ["certificate", "authority"]
+    - "Anastasia's Revenge" -> ["anastasia's", "revenge"]
+    """
+    lowered = name.lower()
+
+    # Keep apostrophes only when they are inside a word.
+    no_edge_apostrophes = re.sub(r"(?<![a-z0-9])'|'(?![a-z0-9])", " ", lowered)
+    cleaned = re.sub(r"[^a-z0-9'\s]", " ", no_edge_apostrophes)
+
     tokens = cleaned.split()
-    return " ".join(token.title() for token in tokens)
+    if not tokens:
+        return tokens
+
+    last = tokens[-1]
+    if last.endswith("s") and len(last) > 3 and not last.endswith("'s"):
+        if last.endswith("ies") and len(last) > 4:
+            tokens[-1] = last[:-3] + "y"
+        else:
+            tokens[-1] = last[:-1]
+
+    return tokens
+
+
+def edit_distance_1(left: str, right: str) -> bool:
+    if left == right:
+        return False
+    if abs(len(left) - len(right)) > 1:
+        return False
+
+    if len(left) == len(right):
+        mismatches = sum(1 for a, b in zip(left, right) if a != b)
+        return mismatches == 1
+
+    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
+    i = 0
+    j = 0
+    skipped = False
+    while i < len(shorter) and j < len(longer):
+        if shorter[i] == longer[j]:
+            i += 1
+            j += 1
+            continue
+        if skipped:
+            return False
+        skipped = True
+        j += 1
+    return True
+
+
+def is_duplicate(a: str, b: str) -> bool:
+    """
+    Return True ONLY if concepts are effectively identical.
+
+    Rules:
+    - Tokenize using tokenize_for_matching
+    - Same number of tokens
+    - All tokens match exactly OR
+      exactly one token differs by edit distance 1
+    """
+    left_tokens = tokenize_for_matching(a)
+    right_tokens = tokenize_for_matching(b)
+
+    if len(left_tokens) != len(right_tokens):
+        return False
+
+    mismatches = [
+        (left, right)
+        for left, right in zip(left_tokens, right_tokens)
+        if left != right
+    ]
+
+    if not mismatches:
+        return True
+    if len(mismatches) != 1:
+        return False
+
+    left_token, right_token = mismatches[0]
+    return edit_distance_1(left_token, right_token)
+
+
+def is_sibling(a: str, b: str) -> bool:
+    """
+    True if concepts share the same head word (last token)
+    but have different modifiers.
+
+    Example:
+    - "ECB Mode" vs "CBC Mode" -> True
+    """
+    left_tokens = tokenize_for_matching(a)
+    right_tokens = tokenize_for_matching(b)
+
+    if len(left_tokens) < 2 or len(right_tokens) < 2:
+        return False
+    if left_tokens[-1] != right_tokens[-1]:
+        return False
+
+    return left_tokens[:-1] != right_tokens[:-1]
+
+
+def has_strong_overlap(a: str, b: str) -> bool:
+    """
+    True if concepts share at least 2 tokens in order.
+
+    This replaces naive substring matching.
+
+    Example:
+    - "Public Key Cryptography" vs "Key Cryptography" -> True
+    - "Key Length" vs "Key Generation" -> False
+    """
+    left_tokens = tokenize_for_matching(a)
+    right_tokens = tokenize_for_matching(b)
+
+    if len(left_tokens) < 2 or len(right_tokens) < 2:
+        return False
+
+    best_run = 0
+    for i in range(len(left_tokens)):
+        for j in range(len(right_tokens)):
+            run = 0
+            while (
+                i + run < len(left_tokens)
+                and j + run < len(right_tokens)
+                and left_tokens[i + run] == right_tokens[j + run]
+            ):
+                run += 1
+            if run > best_run:
+                best_run = run
+            if best_run >= 2:
+                return True
+
+    return False
 
 
 def load_canonical_cache() -> dict[str, Optional[str]]:
@@ -222,7 +375,7 @@ def evaluate_concepts(grouped: dict[str, list]) -> dict:
     avg_facts_per_concept = (total_facts / total_concepts) if total_concepts else 0.0
 
     singleton_count = sum(1 for concept in concepts if len(grouped[concept]) == 1)
-    singleton_ratio = (singleton_count / total_concepts * 100.0) if total_concepts else 0.0
+    singleton_ratio = (singleton_count / total_concepts) if total_concepts else 0.0
 
     suspicious_concepts: List[str] = []
     filler_words = {"goals", "impact", "effects"}
@@ -233,7 +386,10 @@ def evaluate_concepts(grouped: dict[str, list]) -> dict:
         words_lower = [w.lower() for w in words]
 
         has_filler = any(w in filler_words for w in words_lower)
-        has_plural = any(w.endswith("s") and len(w) > 1 for w in words_lower)
+        has_plural = any(
+            w.endswith("s") and len(w) > 3 and not original.isupper()
+            for w, original in zip(words_lower, words)
+        )
         has_lowercase_acronym = any(w in lowercase_acronyms for w in words)
 
         if has_filler or has_plural or has_lowercase_acronym:
@@ -244,6 +400,9 @@ def evaluate_concepts(grouped: dict[str, list]) -> dict:
     def differs_by_one_word(left: str, right: str) -> bool:
         left_words = left.lower().split()
         right_words = right.lower().split()
+
+        if min(len(left_words), len(right_words)) < 2:
+            return False
 
         if abs(len(left_words) - len(right_words)) == 1:
             shorter = left_words if len(left_words) < len(right_words) else right_words
@@ -258,9 +417,14 @@ def evaluate_concepts(grouped: dict[str, list]) -> dict:
 
     for i, left in enumerate(concepts):
         for right in concepts[i + 1 :]:
-            left_l = left.lower()
-            right_l = right.lower()
-            is_substring_match = left_l in right_l or right_l in left_l
+            left_words = left.lower().split()
+            right_words = right.lower().split()
+            shorter_words = left_words if len(left_words) <= len(right_words) else right_words
+            longer_words = right_words if len(right_words) >= len(left_words) else left_words
+            is_substring_match = (
+                len(shorter_words) >= 2
+                and " ".join(shorter_words) in " ".join(longer_words)
+            )
             if is_substring_match or differs_by_one_word(left, right):
                 near_duplicates.append((left, right))
 
@@ -333,29 +497,12 @@ def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None
 
 
 def _concepts_are_similar(left: str, right: str) -> bool:
-    left_l = left.lower().strip()
-    right_l = right.lower().strip()
-
-    # Rule 1: one concept name is a substring of the other.
-    if left_l in right_l or right_l in left_l:
+    if is_duplicate(left, right):
         return True
-
-    left_words = left_l.split()
-    right_words = right_l.split()
-
-    # Rule 2a: names differ by one added/removed word.
-    if abs(len(left_words) - len(right_words)) == 1:
-        shorter = left_words if len(left_words) < len(right_words) else right_words
-        longer = right_words if len(right_words) > len(left_words) else left_words
-        if all(word in longer for word in shorter):
-            return True
-
-    # Rule 2b: same length, exactly one different word.
-    if len(left_words) == len(right_words):
-        mismatches = sum(1 for a, b in zip(left_words, right_words) if a != b)
-        if mismatches == 1:
-            return True
-
+    if is_sibling(left, right):
+        return False
+    if has_strong_overlap(left, right):
+        return True
     return False
 
 
@@ -363,25 +510,30 @@ def merge_similar_concepts(grouped: dict[str, List[Fact]]) -> dict[str, List[Fac
     merged: dict[str, List[Fact]] = {}
 
     for concept, facts in grouped.items():
-        target_key = concept
+        merged_with_existing = False
         for existing_key in list(merged.keys()):
             if not _concepts_are_similar(concept, existing_key):
                 continue
 
             # Keep more common name; if tied, keep shorter name.
             if len(merged[existing_key]) > len(facts):
-                target_key = existing_key
+                winner = existing_key
             elif len(merged[existing_key]) < len(facts):
-                target_key = concept
+                winner = concept
             else:
-                target_key = concept if len(concept) < len(existing_key) else existing_key
+                winner = concept if len(concept) < len(existing_key) else existing_key
 
+            if winner == existing_key:
+                merged[existing_key].extend(facts)
+            else:
+                existing_facts = merged.pop(existing_key)
+                merged[concept] = list(existing_facts) + list(facts)
+
+            merged_with_existing = True
             break
 
-        if target_key in merged:
-            merged[target_key].extend(facts)
-        else:
-            merged[target_key] = list(facts)
+        if not merged_with_existing:
+            merged[concept] = list(facts)
 
     return merged
 
@@ -407,15 +559,28 @@ if __name__ == "__main__":
     for concept, facts in grouped.items():
         if concept in canonical_map:
             canonical_name = canonical_map[concept]
-            if canonical_name is None:
-                continue
-            target_name = canonical_name
+            target_name = canonical_name if canonical_name is not None else concept
         else:
             target_name = concept
 
         final_grouped.setdefault(target_name, []).extend(facts)
 
-    # Step 7: Print final grouped concept counts.
+    final_grouped = merge_similar_concepts(final_grouped)
+
+    # Step 7: Second-pass canonicalization for suspicious concept labels.
+    initial_eval = evaluate_concepts(final_grouped)
+    suspicious_to_fix = initial_eval.get("suspicious_concepts", [])
+    suspicious_map = canonicalize_concepts(suspicious_to_fix) if suspicious_to_fix else {}
+
+    if suspicious_map:
+        refined_grouped: dict[str, List[Fact]] = {}
+        for concept, facts in final_grouped.items():
+            canonical_name = suspicious_map.get(concept)
+            target_name = canonical_name if canonical_name is not None else concept
+            refined_grouped.setdefault(target_name, []).extend(facts)
+        final_grouped = merge_similar_concepts(refined_grouped)
+
+    # Step 8: Print final grouped concept counts.
     for concept, facts in final_grouped.items():
         print(concept, "->", len(facts))
 
