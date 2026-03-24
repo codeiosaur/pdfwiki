@@ -9,6 +9,7 @@ from transform.cluster import cluster_related_concepts
 from transform.grouping import group_facts_by_concept
 from transform.canonicalize import canonicalize_concepts
 from transform.merge import merge_similar_concepts
+from transform.normalize import normalize_group_keys
 from transform.filter import filter_concepts
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -205,12 +206,15 @@ if __name__ == "__main__":
     
     grouped = group_facts_by_concept(all_facts)
 
-    # Step 5: Canonicalize all concepts (cache-backed to avoid redundant LLM calls).
-    concept_names = list(grouped.keys())
+    # Step 5: Deterministic rule-based normalization before LLM canonicalization.
+    rule_normalized_grouped = normalize_group_keys(grouped)
+
+    # Step 6: Canonicalize normalized concepts (cache-backed to avoid redundant LLM calls).
+    concept_names = list(rule_normalized_grouped.keys())
     canonical_map = canonicalize_concepts(concept_names)
 
-    # Step 6: Build final grouped map with canonical names.
-    final_grouped = apply_canonical_map(grouped, canonical_map)
+    # Step 7: Build final grouped map with canonical names.
+    final_grouped = apply_canonical_map(rule_normalized_grouped, canonical_map)
 
     final_grouped = merge_similar_concepts(final_grouped)
     final_grouped = cluster_related_concepts(final_grouped)
