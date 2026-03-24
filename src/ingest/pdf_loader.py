@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import List
 from pathlib import Path
 from pypdf import PdfReader
+import re
 
 import uuid
 
@@ -14,7 +15,16 @@ class Chunk:
     source: str
     chapter: str | None
 
-def load_pdf_chunks(pdf_path: str, chunk_size_words: int = 1000) -> List[Chunk]:
+def load_pdf_chunks(
+    pdf_path: str,
+    min_chunk_words: int = 500,
+    max_chunk_words: int = 700,
+) -> List[Chunk]:
+    if min_chunk_words < 1:
+        min_chunk_words = 1
+    if max_chunk_words < min_chunk_words:
+        max_chunk_words = min_chunk_words
+
     # Step 1: Load PDF and collect text from all pages.
     reader = PdfReader(pdf_path)
     page_texts: List[str] = []
@@ -23,21 +33,76 @@ def load_pdf_chunks(pdf_path: str, chunk_size_words: int = 1000) -> List[Chunk]:
 
     full_text = "\n".join(page_texts)
 
-    # Step 2: Split into ~1000-word chunks.
-    words = full_text.split()
+    # Step 2: Split on sentence boundaries, then pack into roughly 500-700 word chunks.
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", full_text) if s.strip()]
     chunks: List[Chunk] = []
     source_name = Path(pdf_path).name
 
-    for i in range(0, len(words), chunk_size_words):
-        chunk_words = words[i : i + chunk_size_words]
-        chunk_text = " ".join(chunk_words)
+    current_sentences: List[str] = []
+    current_word_count = 0
+
+    def flush_current() -> None:
+        nonlocal current_sentences, current_word_count
+        if not current_sentences:
+            return
         chunks.append(
             Chunk(
                 id=str(uuid.uuid4()),
-                text=chunk_text,
+                text=" ".join(current_sentences),
                 source=source_name,
                 chapter=None,
             )
         )
+        current_sentences = []
+        current_word_count = 0
+
+    for sentence in sentences:
+        sentence_words = sentence.split()
+        sentence_word_count = len(sentence_words)
+        if sentence_word_count == 0:
+            continue
+
+        # Fallback: if a single sentence is too large, split it by words.
+        if sentence_word_count > max_chunk_words:
+            flush_current()
+            for i in range(0, sentence_word_count, max_chunk_words):
+                part_words = sentence_words[i : i + max_chunk_words]
+                chunks.append(
+                    Chunk(
+                        id=str(uuid.uuid4()),
+                        text=" ".join(part_words),
+                        source=source_name,
+                        chapter=None,
+                    )
+                )
+            continue
+
+        # Start a new chunk when current one is already in-range and next sentence would overflow.
+        if (
+            current_sentences
+            and current_word_count >= min_chunk_words
+            and current_word_count + sentence_word_count > max_chunk_words
+        ):
+            flush_current()
+
+        current_sentences.append(sentence)
+        current_word_count += sentence_word_count
+
+    # Emit any remaining text as the final chunk.
+    flush_current()
+
+    # If sentence splitting produced no chunks (e.g., unusual formatting), fall back to word slicing.
+    if not chunks:
+        words = full_text.split()
+        for i in range(0, len(words), max_chunk_words):
+            chunk_words = words[i : i + max_chunk_words]
+            chunks.append(
+                Chunk(
+                    id=str(uuid.uuid4()),
+                    text=" ".join(chunk_words),
+                    source=source_name,
+                    chapter=None,
+                )
+            )
 
     return chunks

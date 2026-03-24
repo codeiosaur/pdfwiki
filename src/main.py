@@ -1,26 +1,53 @@
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterator, List, Optional
 import json
 import re
 
-from extract.fact_extractor import extract_facts, Fact
-from ingest.pdf_loader import load_pdf_chunks
+from extract.fact_extractor import extract_facts_batched, Fact
+from ingest.pdf_loader import Chunk, load_pdf_chunks
 from transform.cluster import cluster_related_concepts
 from transform.grouping import group_facts_by_concept
 from transform.canonicalize import needs_canonicalization, canonicalize_concepts
 from transform.merge import merge_similar_concepts
-from transform.filter import filter_concepts, is_valid_concept
+from transform.filter import filter_concepts
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 EVALUATION_CACHE_PATH = Path(__file__).with_name("evaluation_metrics.json")
 
 
-def run_pipeline(pdf_path: str) -> List[Fact]:
+def run_pipeline(pdf_path: str, batch_size: int = 3) -> List[Fact]:
     # Step 3: End-to-end pipeline: PDF -> Chunks -> Facts.
-    chunks = load_pdf_chunks(pdf_path=pdf_path, chunk_size_words=1000)
+    chunks = load_pdf_chunks(pdf_path=pdf_path)
+
+    # Batch chunks to reduce LLM calls while retaining per-fact source_chunk_id.
+    return extract_facts_batched(chunks=chunks, batch_size=batch_size)
+
+
+def generate_chunk_batches(chunks: List[Chunk], batch_size: int = 2) -> Iterator[List[Chunk]]:
+    if batch_size < 1:
+        batch_size = 1
+    for i in range(0, len(chunks), batch_size):
+        yield chunks[i : i + batch_size]
+
+def run_pipeline_parallel(pdf_path: str, batch_size: int = 2, max_workers: int = 5) -> List[Fact]:
+    # Step 3: End-to-end pipeline: PDF -> Chunks -> Facts.
+    chunks = load_pdf_chunks(pdf_path=pdf_path)
+    chunk_batches = list(generate_chunk_batches(chunks, batch_size=batch_size))
 
     all_facts: List[Fact] = []
-    for chunk in chunks:
-        all_facts.extend(extract_facts(chunk_text=chunk.text, chunk_id=chunk.id))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(extract_facts_batched, batch, batch_size)
+            for batch in chunk_batches
+        ]
+
+        for future in as_completed(futures):
+            try:
+                batch_facts = future.result()
+                all_facts.extend(batch_facts)
+            except Exception:
+                continue
 
     return all_facts
 
@@ -154,7 +181,7 @@ def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None
 if __name__ == "__main__":
     # Step 4: Demo run and print first 5 facts.
     demo_pdf_path = "./sample-accounting-openstax.pdf"
-    all_facts = run_pipeline(demo_pdf_path)
+    all_facts = run_pipeline_parallel(demo_pdf_path, batch_size=2, max_workers=5)
     print(f"Extracted {len(all_facts)} facts")
     for fact in all_facts[:5]:
         print(f"{fact.id} | {fact.concept} | {fact.content} "

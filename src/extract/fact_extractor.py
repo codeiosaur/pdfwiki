@@ -1,10 +1,13 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, TYPE_CHECKING
 
 import json
 import os
 import uuid
 import openai
+
+if TYPE_CHECKING:
+    from ingest.pdf_loader import Chunk
 
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
@@ -35,6 +38,24 @@ class Fact:
     source_chunk_id: str
 
 
+def _parse_json_array(raw_content: str):
+    """
+    Parse a JSON array from raw model output.
+    Handles direct JSON and common markdown/prose wrappers.
+    """
+    try:
+        return json.loads(raw_content)
+    except Exception:
+        start = raw_content.find("[")
+        end = raw_content.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            return json.loads(raw_content[start : end + 1])
+        except Exception:
+            return None
+
+
 def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
     """
     Extract atomic facts from a chunk of text using an LLM.
@@ -45,26 +66,18 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
     prompt = f"""
     Extract atomic facts from the text.
 
-    For each fact:
-        - Assign a concept name that is SHORT and CANONICAL (1-4 words)
-    - Use standard textbook terminology
-        - Use noun-phrase style names (not sentence fragments)
-    - Prefer commonly accepted names
-    - DO NOT invent new concepts
-    - Prefer canonical forms: output either acronym OR full term, not both
-    - If the concept is underspecified or unclear, SKIP it
-    - DO NOT include meta concepts like "terminology", "example", "note"
-    - DO NOT include implementation details (e.g., browsers, OS, etc.)
-        - DO NOT output vague labels ending with generic terms like
-            "objectives", "impact", "effects", "goals", "overview", "status"
-        - DO NOT output malformed possessive fragments like "X s ..."
-            when apostrophes are dropped; instead use a clean canonical noun phrase
+    Rules:
     
-    Return ONLY a JSON array:
-    [
-      {{"concept": "...", "content": "..."}}
-    ]
-
+    Output ONLY valid JSON (no prose, no markdown).
+    JSON format: [{"concept":"...","content":"..."}]
+    Use short canonical concept names (1–4 words), noun phrases only.
+    Use standard textbook terms; prefer common names.
+    Do not invent facts or concepts; skip unclear/underspecified items.
+    Use either acronym or full term (not both) for the same concept.
+    Exclude meta labels (e.g., terminology, example, note).
+    Exclude implementation-specific details (e.g., browsers, OS).
+    Reject vague concept names ending with: objectives, impact, effects, goals, overview, status.
+    Avoid malformed possessive fragments (e.g., "X s ..."); normalize to a clean noun phrase.
     Text:
     {chunk_text}
     """
@@ -80,18 +93,9 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
         return []
 
     # Step 2: Parse JSON safely. If invalid, return an empty list.
-    try:
-        parsed_data = json.loads(raw_content)
-    except Exception:
-        # Handle common LLM wrappers like prose or markdown code fences.
-        start = raw_content.find("[")
-        end = raw_content.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            return []
-        try:
-            parsed_data = json.loads(raw_content[start : end + 1])
-        except Exception:
-            return []
+    parsed_data = _parse_json_array(raw_content)
+    if parsed_data is None:
+        return []
 
     if not isinstance(parsed_data, list):
         return []
@@ -118,3 +122,97 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
 
     # Step 4: Return facts (or [] if no valid items were provided).
     return facts
+
+
+def extract_facts_batched(chunks: List["Chunk"], batch_size: int = 3) -> List[Fact]:
+    """
+    Extract atomic facts from multiple chunks while reducing LLM calls.
+
+    Chunks are grouped into small batches (default 3) and sent in one prompt.
+    The model must return source_chunk_id for each fact so traceability is preserved.
+    """
+    if not chunks:
+        return []
+
+    if batch_size < 1:
+        batch_size = 1
+
+    all_facts: List[Fact] = []
+
+    for i in range(0, len(chunks), batch_size):
+        batch = chunks[i : i + batch_size]
+        allowed_chunk_ids = {chunk.id for chunk in batch}
+
+        combined_sections: List[str] = []
+        for chunk in batch:
+            combined_sections.append(f"[CHUNK_ID={chunk.id}]\n{chunk.text}")
+        combined_text = "\n\n".join(combined_sections)
+
+        prompt = f"""
+        Extract atomic facts from the batched chunk texts.
+
+        For each fact:
+            - Assign a concept name that is SHORT and CANONICAL (1-4 words)
+            - Use standard textbook terminology
+            - Use noun-phrase style names (not sentence fragments)
+            - Prefer commonly accepted names
+            - DO NOT invent new concepts
+            - Prefer canonical forms: output either acronym OR full term, not both
+            - If the concept is underspecified or unclear, SKIP it
+            - DO NOT include meta concepts like "terminology", "example", "note"
+            - DO NOT include implementation details (e.g., browsers, OS, etc.)
+            - DO NOT output vague labels ending with generic terms like
+              "objectives", "impact", "effects", "goals", "overview", "status"
+            - DO NOT output malformed possessive fragments like "X s ..."
+
+        IMPORTANT:
+            - Each fact MUST include the source_chunk_id from the chunk marker.
+            - source_chunk_id MUST be exactly one of:
+              {sorted(allowed_chunk_ids)}
+
+        Return ONLY a JSON array:
+        [
+          {{"concept": "...", "content": "...", "source_chunk_id": "..."}}
+        ]
+
+        Batched Text:
+        {combined_text}
+        """
+
+        try:
+            response = ollama_client.generate(
+                model=OLLAMA_MODEL,
+                prompt=prompt,
+                max_tokens=900,
+            )
+            raw_content = response.choices[0].message.content or ""
+        except Exception:
+            continue
+
+        parsed_data = _parse_json_array(raw_content)
+        if not isinstance(parsed_data, list):
+            continue
+
+        for item in parsed_data:
+            if not isinstance(item, dict):
+                continue
+
+            concept = item.get("concept")
+            content = item.get("content")
+            source_chunk_id = item.get("source_chunk_id")
+
+            if not isinstance(concept, str) or not isinstance(content, str):
+                continue
+            if not isinstance(source_chunk_id, str) or source_chunk_id not in allowed_chunk_ids:
+                continue
+
+            all_facts.append(
+                Fact(
+                    id=str(uuid.uuid4()),
+                    concept=concept,
+                    content=content,
+                    source_chunk_id=source_chunk_id,
+                )
+            )
+
+    return all_facts
