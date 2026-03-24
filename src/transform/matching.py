@@ -1,5 +1,10 @@
 import re
 
+ANTONYM_TOKEN_PAIRS = {
+    ("first", "last"),
+    ("periodic", "perpetual"),
+}
+
 def tokenize_for_matching(name: str) -> list[str]:
     """
     Convert a concept name into normalized tokens for comparison ONLY.
@@ -148,5 +153,25 @@ def has_strong_overlap(a: str, b: str) -> bool:
                 best_run = run
             if best_run >= 2:
                 return True
+
+    return False
+
+
+def has_antonym_conflict(a: str, b: str) -> bool:
+    """
+    True if concept pair contains known antonym token patterns.
+
+    Example:
+    - "First In First Out" vs "Last In First Out" -> True
+    - "Periodic System" vs "Perpetual System" -> True
+    """
+    left_tokens = set(tokenize_for_matching(a))
+    right_tokens = set(tokenize_for_matching(b))
+
+    for token_a, token_b in ANTONYM_TOKEN_PAIRS:
+        if (token_a in left_tokens and token_b in right_tokens) or (
+            token_b in left_tokens and token_a in right_tokens
+        ):
+            return True
 
     return False

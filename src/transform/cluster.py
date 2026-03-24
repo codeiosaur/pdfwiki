@@ -1,7 +1,12 @@
 from typing import List
 from extract.fact_extractor import Fact
-from transform.matching import tokenize_for_matching
-from transform.matching import has_strong_overlap, is_duplicate, is_sibling, tokenize_for_matching
+from transform.matching import (
+    has_antonym_conflict,
+    has_strong_overlap,
+    is_duplicate,
+    is_sibling,
+    tokenize_for_matching,
+)
 
 def cluster_related_concepts(grouped: dict[str, List[Fact]]) -> dict[str, List[Fact]]:
     """
@@ -83,6 +88,9 @@ def is_clusterable(a: str, b: str) -> bool:
     - Do NOT cluster if first tokens are clearly distinct acronyms
       (e.g., ECB vs CBC)
     """
+    if has_antonym_conflict(a, b):
+        return False
+
     head_a = find_head_word(a)
     head_b = find_head_word(b)
     if not head_a or head_a != head_b:
@@ -120,6 +128,8 @@ def is_clusterable(a: str, b: str) -> bool:
     return 2 <= len(tokens_a) <= 3 and 2 <= len(tokens_b) <= 3
 
 def _concepts_are_similar(left: str, right: str) -> bool:
+    if has_antonym_conflict(left, right):
+        return False
     if is_duplicate(left, right):
         return True
     if is_sibling(left, right):

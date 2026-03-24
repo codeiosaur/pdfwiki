@@ -7,7 +7,7 @@ from extract.fact_extractor import extract_facts_batched, Fact
 from ingest.pdf_loader import Chunk, load_pdf_chunks
 from transform.cluster import cluster_related_concepts
 from transform.grouping import group_facts_by_concept
-from transform.canonicalize import needs_canonicalization, canonicalize_concepts
+from transform.canonicalize import canonicalize_concepts
 from transform.merge import merge_similar_concepts
 from transform.filter import filter_concepts
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,6 +50,18 @@ def run_pipeline_parallel(pdf_path: str, batch_size: int = 2, max_workers: int =
                 continue
 
     return all_facts
+
+
+def apply_canonical_map(
+    grouped: dict[str, List[Fact]],
+    canonical_map: dict[str, Optional[str]],
+) -> dict[str, List[Fact]]:
+    remapped: dict[str, List[Fact]] = {}
+    for concept, facts in grouped.items():
+        canonical_name = canonical_map.get(concept)
+        target_name = canonical_name if canonical_name is not None else concept
+        remapped.setdefault(target_name, []).extend(facts)
+    return remapped
 
 def evaluate_concepts(grouped: dict[str, list]) -> dict:
     concepts = list(grouped.keys())
@@ -193,38 +205,15 @@ if __name__ == "__main__":
     
     grouped = group_facts_by_concept(all_facts)
 
-    # Step 5: Canonicalize only concepts that need fixing.
+    # Step 5: Canonicalize all concepts (cache-backed to avoid redundant LLM calls).
     concept_names = list(grouped.keys())
-    concepts_to_fix = [name for name in concept_names if needs_canonicalization(name)]
-    canonical_map = canonicalize_concepts(concepts_to_fix)
+    canonical_map = canonicalize_concepts(concept_names)
 
     # Step 6: Build final grouped map with canonical names.
-    final_grouped: dict[str, List[Fact]] = {}
-    for concept, facts in grouped.items():
-        if concept in canonical_map:
-            canonical_name = canonical_map[concept]
-            target_name = canonical_name if canonical_name is not None else concept
-        else:
-            target_name = concept
-
-        final_grouped.setdefault(target_name, []).extend(facts)
+    final_grouped = apply_canonical_map(grouped, canonical_map)
 
     final_grouped = merge_similar_concepts(final_grouped)
     final_grouped = cluster_related_concepts(final_grouped)
-
-    # Step 7: Second-pass canonicalization for suspicious concept labels.
-    initial_eval = evaluate_concepts(final_grouped)
-    suspicious_to_fix = initial_eval.get("suspicious_concepts", [])
-    suspicious_map = canonicalize_concepts(suspicious_to_fix) if suspicious_to_fix else {}
-
-    if suspicious_map:
-        refined_grouped: dict[str, List[Fact]] = {}
-        for concept, facts in final_grouped.items():
-            canonical_name = suspicious_map.get(concept)
-            target_name = canonical_name if canonical_name is not None else concept
-            refined_grouped.setdefault(target_name, []).extend(facts)
-        final_grouped = merge_similar_concepts(refined_grouped)
-        final_grouped = cluster_related_concepts(final_grouped)
 
     # Step 8: Print final grouped concept counts.
     for concept, facts in final_grouped.items():

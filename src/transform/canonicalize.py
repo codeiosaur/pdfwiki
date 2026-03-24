@@ -44,44 +44,43 @@ def canonicalize_concepts(concepts: list[str]) -> dict[str, Optional[str]]:
     if not missing:
         return {name: cache.get(name) for name in concepts}
 
-    # Step 1: Send uncached concepts in one batched prompt.
-    prompt = (f"""
-    You are given concept names extracted from academic material.
+        # Step 1: Send uncached concepts in one batched prompt.
+        prompt = (f"""
+        Canonicalize concept names from academic material.
 
-    Your task:
-    - Fix spelling errors
-    - Fix possessives (e.g., Shannon, Euler, Kerckhoffs)
-    - Normalize to standard terminology
-    - Remove invalid, vague, or underspecified concepts (return null)
-        - Keep concept names as clean noun phrases (1-4 words)
+        Goals:
+        - Fix spelling, casing, and malformed possessives.
+        - Expand common abbreviations when appropriate:
+            COGS -> Cost of Goods Sold
+            LCM -> Lower of Cost or Market
+        - Normalize variants to one textbook name:
+            FIFO, First In First Out Method -> First In First Out
+        - Fix acronym casing errors:
+            Epcs -> Electronic Product Code
+        - Remove redundant suffixes when non-essential:
+            Method, System, Approach
+        - Keep names concise noun phrases (1-4 words).
 
-    Rules:
-    - Do NOT merge different concepts
-    - Do NOT invent new concepts
-    - Preserve meaning exactly
-    - Keep names concise (1–4 words)
-        - If a concept is malformed due to dropped apostrophes (e.g., "X S Y"),
-            rewrite it to a clean canonical phrase
-        - If a concept ends with vague generic labels
-            (objectives, impact, effects, goals, overview, status),
-            return a clearer canonical name only when clearly supported;
-            otherwise return null
-    - Normalize to ONE canonical form:
-    - acronym OR expansion, never both
-    - Remove vague trailing words:
-    support, impact, overview, objectives, goals, status, effects
-    (if meaning remains clear)
+        Strict rules:
+        - Do NOT merge distinct concepts (FIFO and LIFO must stay separate).
+        - Do NOT generalize (do not map FIFO -> Inventory Method).
+        - Do NOT invent concepts.
+        - Preserve meaning exactly.
+        - Return null only if the concept is invalid, vague, or not a real concept.
 
-    Return ONLY valid JSON mapping original → fixed (or null):
+        Output:
+        - Return ONLY valid JSON object mapping original -> canonical_or_null.
+        - Keep every input key in the output.
 
-    {{
-      "Concept A": "Fixed Name",
-      "Concept B": null
-    }}
+        Example format:
+        {{
+            "Concept A": "Canonical Name",
+            "Concept B": null
+        }}
 
-    Concepts:
-    {chr(10).join("- " + c for c in missing)}
-    """)
+        Concepts:
+        {chr(10).join("- " + c for c in missing)}
+        """)
 
     try:
         response = ollama_client.generate(

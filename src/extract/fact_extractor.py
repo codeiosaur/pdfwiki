@@ -67,12 +67,13 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
     Extract atomic facts from the text.
 
     Rules:
-    
+
     Output ONLY valid JSON (no prose, no markdown).
     JSON format: [{"concept":"...","content":"..."}]
     Use short canonical concept names (1–4 words), noun phrases only.
     Use standard textbook terms; prefer common names.
     Do not invent facts or concepts; skip unclear/underspecified items.
+    Include all explicitly defined concepts, even if they appear minor.
     Use either acronym or full term (not both) for the same concept.
     Exclude meta labels (e.g., terminology, example, note).
     Exclude implementation-specific details (e.g., browsers, OS).
