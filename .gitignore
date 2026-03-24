@@ -25,3 +25,4 @@ vault/
 data/
 tmp/
 *.pdf
+*.json

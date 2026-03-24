@@ -45,11 +45,16 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
     Extract atomic facts from the text.
 
     For each fact:
-    - Assign a concept name that is SHORT and CANONICAL (1–3 words)
+        - Assign a concept name that is SHORT and CANONICAL (1-4 words)
     - Use standard textbook terminology
+        - Use noun-phrase style names (not sentence fragments)
     - DO NOT invent new concepts
     - DO NOT include meta concepts like "terminology", "example", "note"
     - DO NOT include implementation details (e.g., browsers, OS, etc.)
+        - DO NOT output vague labels ending with generic terms like
+            "objectives", "impact", "effects", "goals", "overview", "status"
+        - DO NOT output malformed possessive fragments like "X s ..."
+            when apostrophes are dropped; instead use a clean canonical noun phrase
     - Prefer commonly accepted names
 
     Return ONLY a JSON array:

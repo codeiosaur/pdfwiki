@@ -221,6 +221,125 @@ def has_strong_overlap(a: str, b: str) -> bool:
     return False
 
 
+def find_head_word(concept: str) -> str:
+    """
+    Return the last token (normalized).
+    """
+    tokens = tokenize_for_matching(concept)
+    return tokens[-1] if tokens else ""
+
+
+def should_cluster(a: str, b: str) -> bool:
+    """
+    Return True if concepts belong to same cluster.
+
+    Rules:
+    - Same head word (last token)
+    - At least one shared non-stopword token OR both are 2-3 words
+    - Do NOT cluster if first tokens are clearly distinct acronyms
+      (e.g., ECB vs CBC)
+    """
+    head_a = find_head_word(a)
+    head_b = find_head_word(b)
+    if not head_a or head_a != head_b:
+        return False
+
+    tokens_a = tokenize_for_matching(a)
+    tokens_b = tokenize_for_matching(b)
+
+    # Cluster multi-word concepts that share the same first token.
+    if (
+        len(tokens_a) >= 2
+        and len(tokens_b) >= 2
+        and tokens_a[0] == tokens_b[0]
+    ):
+        return True
+
+    first_a = a.split()[0] if a.split() else ""
+    first_b = b.split()[0] if b.split() else ""
+    if (
+        first_a.isalpha()
+        and first_b.isalpha()
+        and first_a.isupper()
+        and first_b.isupper()
+        and first_a != first_b
+    ):
+        return False
+
+    stopwords = {"a", "an", "the", "of", "and", "or", "to", "for", "in", "on", "with", "by"}
+    core_a = {t for t in tokens_a[:-1] if t not in stopwords}
+    core_b = {t for t in tokens_b[:-1] if t not in stopwords}
+
+    if core_a.intersection(core_b):
+        return True
+
+    return 2 <= len(tokens_a) <= 3 and 2 <= len(tokens_b) <= 3
+
+
+def cluster_related_concepts(grouped: dict[str, List[Fact]]) -> dict[str, List[Fact]]:
+    """
+    Merge related concepts based on shared FIRST token.
+
+        Rules:
+        - Only consider concepts with 2+ words
+        - If multiple concepts share the same FIRST token (case-insensitive),
+            merge into ONE concept
+        - Use an existing concept name as the cluster label:
+            most facts, then longest name
+        - Concepts not in a merge group remain unchanged
+    """
+    groups_by_first: dict[str, List[str]] = {}
+    for concept in grouped.keys():
+        words = concept.split()
+        if len(words) < 2:
+            continue
+        first_token = words[0].lower()
+        groups_by_first.setdefault(first_token, []).append(concept)
+
+    merged_keys: set[str] = set()
+    clustered: dict[str, List[Fact]] = {}
+
+    def longest_common_suffix(concepts: List[str]) -> List[str]:
+        token_lists = [tokenize_for_matching(concept) for concept in concepts]
+        if not token_lists:
+            return []
+
+        reversed_lists = [list(reversed(tokens)) for tokens in token_lists]
+        min_len = min(len(tokens) for tokens in reversed_lists)
+        shared_reversed: List[str] = []
+
+        for i in range(min_len):
+            token = reversed_lists[0][i]
+            if all(tokens[i] == token for tokens in reversed_lists[1:]):
+                shared_reversed.append(token)
+            else:
+                break
+
+        return list(reversed(shared_reversed))
+
+    for _, concepts in groups_by_first.items():
+        if len(concepts) < 2:
+            continue
+
+        suffix_tokens = longest_common_suffix(concepts)
+        if suffix_tokens:
+            target = " ".join(token.title() for token in suffix_tokens)
+        else:
+            target = max(concepts, key=lambda c: (len(grouped[c]), len(c)))
+
+        bucket = clustered.setdefault(target, [])
+        for concept in concepts:
+            bucket.extend(grouped[concept])
+            merged_keys.add(concept)
+
+    for concept, facts in grouped.items():
+        if concept in merged_keys:
+            continue
+        clustered.setdefault(concept, []).extend(facts)
+
+    return clustered
+
+
 def load_canonical_cache() -> dict[str, Optional[str]]:
     if not CANONICAL_CACHE_PATH.exists():
         return {}
@@ -267,12 +386,19 @@ def canonicalize_concepts(concepts: List[str]) -> dict[str, Optional[str]]:
     - Fix possessives (e.g., Shannon, Euler, Kerckhoffs)
     - Normalize to standard terminology
     - Remove invalid or vague concepts (return null)
+        - Keep concept names as clean noun phrases (1-4 words)
 
     Rules:
     - Do NOT merge different concepts
     - Do NOT invent new concepts
     - Preserve meaning exactly
     - Keep names concise (1–4 words)
+        - If a concept is malformed due to dropped apostrophes (e.g., "X S Y"),
+            rewrite it to a clean canonical phrase
+        - If a concept ends with vague generic labels
+            (objectives, impact, effects, goals, overview, status),
+            return a clearer canonical name only when clearly supported;
+            otherwise return null
 
     Return ONLY valid JSON mapping original → fixed (or null):
 
@@ -566,6 +692,7 @@ if __name__ == "__main__":
         final_grouped.setdefault(target_name, []).extend(facts)
 
     final_grouped = merge_similar_concepts(final_grouped)
+    final_grouped = cluster_related_concepts(final_grouped)
 
     # Step 7: Second-pass canonicalization for suspicious concept labels.
     initial_eval = evaluate_concepts(final_grouped)
@@ -579,6 +706,7 @@ if __name__ == "__main__":
             target_name = canonical_name if canonical_name is not None else concept
             refined_grouped.setdefault(target_name, []).extend(facts)
         final_grouped = merge_similar_concepts(refined_grouped)
+        final_grouped = cluster_related_concepts(final_grouped)
 
     # Step 8: Print final grouped concept counts.
     for concept, facts in final_grouped.items():
