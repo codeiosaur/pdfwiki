@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import List
+
 import json
 import os
 import uuid
@@ -48,15 +49,17 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
         - Assign a concept name that is SHORT and CANONICAL (1-4 words)
     - Use standard textbook terminology
         - Use noun-phrase style names (not sentence fragments)
+    - Prefer commonly accepted names
     - DO NOT invent new concepts
+    - Prefer canonical forms: output either acronym OR full term, not both
+    - If the concept is underspecified or unclear, SKIP it
     - DO NOT include meta concepts like "terminology", "example", "note"
     - DO NOT include implementation details (e.g., browsers, OS, etc.)
         - DO NOT output vague labels ending with generic terms like
             "objectives", "impact", "effects", "goals", "overview", "status"
         - DO NOT output malformed possessive fragments like "X s ..."
             when apostrophes are dropped; instead use a clean canonical noun phrase
-    - Prefer commonly accepted names
-
+    
     Return ONLY a JSON array:
     [
       {{"concept": "...", "content": "..."}}

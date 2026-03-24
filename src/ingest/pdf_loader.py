@@ -2,9 +2,9 @@
 from dataclasses import dataclass
 from typing import List
 from pathlib import Path
-import uuid
+from pypdf import PdfReader
 
-import pypdf  # pip install pypdf
+import uuid
 
 
 @dataclass
@@ -14,32 +14,28 @@ class Chunk:
     source: str
     chapter: str | None
 
+def load_pdf_chunks(pdf_path: str, chunk_size_words: int = 1000) -> List[Chunk]:
+    # Step 1: Load PDF and collect text from all pages.
+    reader = PdfReader(pdf_path)
+    page_texts: List[str] = []
+    for page in reader.pages:
+        page_texts.append(page.extract_text() or "")
 
-def load_pdf(path: str, chunk_size: int = 1000) -> List[Chunk]:
-    """
-    Load a PDF and split it into text chunks (~chunk_size words each).
-    Return a list of Chunk objects with unique IDs.
-    """
+    full_text = "\n".join(page_texts)
 
-    # 1. Read PDF
-    pdf = pypdf.PdfReader(path)
-    full_text = ""
-    for page in pdf.pages:
-        full_text += page.extract_text() + "\n"
-
-    # 2. Split into words
+    # Step 2: Split into ~1000-word chunks.
     words = full_text.split()
-    chunks = []
+    chunks: List[Chunk] = []
+    source_name = Path(pdf_path).name
 
-    # 3. Create chunks
-    for i in range(0, len(words), chunk_size):
-        chunk_words = words[i : i + chunk_size]
+    for i in range(0, len(words), chunk_size_words):
+        chunk_words = words[i : i + chunk_size_words]
         chunk_text = " ".join(chunk_words)
         chunks.append(
             Chunk(
                 id=str(uuid.uuid4()),
                 text=chunk_text,
-                source=str(Path(path).name),
+                source=source_name,
                 chapter=None,
             )
         )
