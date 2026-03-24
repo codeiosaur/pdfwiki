@@ -9,6 +9,7 @@ from transform.cluster import cluster_related_concepts
 from transform.grouping import group_facts_by_concept
 from transform.canonicalize import needs_canonicalization, canonicalize_concepts
 from transform.merge import merge_similar_concepts
+from transform.filter import filter_concepts, is_valid_concept
 
 EVALUATION_CACHE_PATH = Path(__file__).with_name("evaluation_metrics.json")
 
@@ -158,6 +159,10 @@ if __name__ == "__main__":
     for fact in all_facts[:5]:
         print(f"{fact.id} | {fact.concept} | {fact.content} "
               f"| chunk={fact.source_chunk_id}")
+    
+    # Step 4.5: Filter concepts by eligibility (reject examples, proper nouns, etc.)
+    all_facts = filter_concepts(all_facts)
+    print(f"After filtering: {len(all_facts)} valid concept facts")
     
     grouped = group_facts_by_concept(all_facts)
 
