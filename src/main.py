@@ -11,18 +11,10 @@ from transform.canonicalize import canonicalize_concepts
 from transform.merge import merge_similar_concepts
 from transform.normalize import normalize_group_keys
 from transform.filter import filter_concepts
+from generate.pages import generate_pages, render_pages_document, render_pages_preview
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 EVALUATION_CACHE_PATH = Path(__file__).with_name("evaluation_metrics.json")
-
-
-def run_pipeline(pdf_path: str, batch_size: int = 3) -> List[Fact]:
-    # Step 3: End-to-end pipeline: PDF -> Chunks -> Facts.
-    chunks = load_pdf_chunks(pdf_path=pdf_path)
-
-    # Batch chunks to reduce LLM calls while retaining per-fact source_chunk_id.
-    return extract_facts_batched(chunks=chunks, batch_size=batch_size)
-
 
 def generate_chunk_batches(chunks: List[Chunk], batch_size: int = 2) -> Iterator[List[Chunk]]:
     if batch_size < 1:
@@ -222,6 +214,24 @@ if __name__ == "__main__":
     # Step 8: Print final grouped concept counts.
     for concept, facts in final_grouped.items():
         print(concept, "->", len(facts))
+
+    # Step 9: Generate simple concept pages before evaluation output.
+    pages = generate_pages(final_grouped)
+    skipped_pages = max(0, len(final_grouped) - len(pages))
+    print(f"Generated {len(pages)} concept pages")
+    if skipped_pages:
+        print(f"Skipped {skipped_pages} empty/low-signal pages")
+
+    preview = render_pages_preview(pages, max_pages=2)
+    if preview:
+        print("\n=== PAGE PREVIEW (FIRST 1-2) ===")
+        print(preview)
+
+    pages_doc = render_pages_document(pages)
+    pages_output_path = Path("output") / "concept_pages_sample.md"
+    pages_output_path.parent.mkdir(parents=True, exist_ok=True)
+    pages_output_path.write_text(pages_doc, encoding="utf-8")
+    print(f"Saved combined pages to {pages_output_path}")
 
     eval_result = evaluate_concepts(final_grouped)
 

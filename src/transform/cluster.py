@@ -20,15 +20,6 @@ def cluster_related_concepts(grouped: dict[str, List[Fact]]) -> dict[str, List[F
             most facts, then longest name
         - Concepts not in a merge group remain unchanged
     """
-    groups_by_first: dict[str, List[str]] = {}
-    for concept in grouped.keys():
-        words = concept.split()
-        if len(words) < 2:
-            continue
-        first_token = words[0].lower()
-        groups_by_first.setdefault(first_token, []).append(concept)
-
-    merged_keys: set[str] = set()
     clustered: dict[str, List[Fact]] = {}
 
     def longest_common_suffix(concepts: List[str]) -> List[str]:
@@ -49,25 +40,36 @@ def cluster_related_concepts(grouped: dict[str, List[Fact]]) -> dict[str, List[F
 
         return list(reversed(shared_reversed))
 
-    for _, concepts in groups_by_first.items():
-        if len(concepts) < 2:
+    concepts = list(grouped.keys())
+    visited: set[str] = set()
+
+    for concept in concepts:
+        if concept in visited:
             continue
 
-        suffix_tokens = longest_common_suffix(concepts)
+        cluster_members = [concept]
+        visited.add(concept)
+
+        for candidate in concepts:
+            if candidate in visited:
+                continue
+            if is_clusterable(concept, candidate):
+                cluster_members.append(candidate)
+                visited.add(candidate)
+
+        if len(cluster_members) == 1:
+            clustered.setdefault(concept, []).extend(grouped[concept])
+            continue
+
+        suffix_tokens = longest_common_suffix(cluster_members)
         if suffix_tokens:
             target = " ".join(token.title() for token in suffix_tokens)
         else:
-            target = max(concepts, key=lambda c: (len(grouped[c]), len(c)))
+            target = max(cluster_members, key=lambda c: (len(grouped[c]), len(c)))
 
         bucket = clustered.setdefault(target, [])
-        for concept in concepts:
-            bucket.extend(grouped[concept])
-            merged_keys.add(concept)
-
-    for concept, facts in grouped.items():
-        if concept in merged_keys:
-            continue
-        clustered.setdefault(concept, []).extend(facts)
+        for member in cluster_members:
+            bucket.extend(grouped[member])
 
     return clustered
 
@@ -125,7 +127,7 @@ def is_clusterable(a: str, b: str) -> bool:
     if core_a.intersection(core_b):
         return True
 
-    return 2 <= len(tokens_a) <= 3 and 2 <= len(tokens_b) <= 3
+    return False
 
 def _concepts_are_similar(left: str, right: str) -> bool:
     if has_antonym_conflict(left, right):
