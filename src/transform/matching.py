@@ -3,6 +3,19 @@ import re
 ANTONYM_TOKEN_PAIRS = {
     ("first", "last"),
     ("periodic", "perpetual"),
+    ("beginning", "ending"),
+    ("gross", "net"),
+    ("current", "noncurrent"),
+    ("revenue", "expense"),
+    ("asset", "liability"),
+    ("debit", "credit"),
+    ("fraud", "valuation"),
+    ("fraud", "shrinkage"),
+    ("fraud", "obsolescence"),
+    ("fraud", "management"),
+    ("fraud", "error"),
+    ("shrinkage", "obsolescence"),
+    ("shipping", "destination"),
 }
 
 def tokenize_for_matching(name: str) -> list[str]:

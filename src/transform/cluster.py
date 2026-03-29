@@ -53,6 +53,8 @@ def cluster_related_concepts(grouped: dict[str, List[Fact]]) -> dict[str, List[F
         for candidate in concepts:
             if candidate in visited:
                 continue
+            if has_antonym_conflict(concept, candidate):
+                continue
             if is_clusterable(concept, candidate):
                 cluster_members.append(candidate)
                 visited.add(candidate)
@@ -86,11 +88,19 @@ def is_clusterable(a: str, b: str) -> bool:
 
     Rules:
     - Same head word (last token)
-    - At least one shared non-stopword token OR both are 2-3 words
+    - NOT siblings (same head but different modifiers — these are
+      intentionally distinct concepts like "Inventory Fraud" vs
+      "Inventory Valuation")
+    - Must share the same first AND last tokens (for multi-word)
     - Do NOT cluster if first tokens are clearly distinct acronyms
-      (e.g., ECB vs CBC)
     """
     if has_antonym_conflict(a, b):
+        return False
+
+    # Siblings are distinct concepts that share a head word but differ
+    # in their modifier — e.g., "Inventory Fraud" vs "Inventory Shrinkage".
+    # These must NEVER be merged.
+    if is_sibling(a, b):
         return False
 
     head_a = find_head_word(a)
@@ -101,11 +111,14 @@ def is_clusterable(a: str, b: str) -> bool:
     tokens_a = tokenize_for_matching(a)
     tokens_b = tokenize_for_matching(b)
 
-    # Cluster multi-word concepts that share the same first token.
+    # Only cluster multi-word concepts that share BOTH first and last tokens.
+    # This prevents "Inventory Fraud" + "Inventory Valuation" from merging
+    # (same first token but different last tokens).
     if (
         len(tokens_a) >= 2
         and len(tokens_b) >= 2
         and tokens_a[0] == tokens_b[0]
+        and tokens_a[-1] == tokens_b[-1]
     ):
         return True
 
@@ -120,11 +133,15 @@ def is_clusterable(a: str, b: str) -> bool:
     ):
         return False
 
+    # Require substantial overlap: shared non-stopword tokens must be
+    # at least 50% of the shorter concept's non-stopword tokens.
     stopwords = {"a", "an", "the", "of", "and", "or", "to", "for", "in", "on", "with", "by"}
     core_a = {t for t in tokens_a[:-1] if t not in stopwords}
     core_b = {t for t in tokens_b[:-1] if t not in stopwords}
 
-    if core_a.intersection(core_b):
+    overlap = core_a.intersection(core_b)
+    shorter_core = min(len(core_a), len(core_b))
+    if shorter_core > 0 and len(overlap) >= max(1, shorter_core * 0.5):
         return True
 
     return False
@@ -136,6 +153,19 @@ def _concepts_are_similar(left: str, right: str) -> bool:
         return True
     if is_sibling(left, right):
         return False
-    if has_strong_overlap(left, right):
-        return True
+
+    # Only merge via strong overlap if the shared tokens represent
+    # at least 50% of the shorter concept's tokens.  This prevents
+    # "Inventory Fraud" from merging with "Inventory Valuation" just
+    # because they share the word "inventory".
+    left_tokens = tokenize_for_matching(left)
+    right_tokens = tokenize_for_matching(right)
+    shorter_len = min(len(left_tokens), len(right_tokens))
+
+    if has_strong_overlap(left, right) and shorter_len >= 2:
+        # Count total shared tokens (not just the contiguous run)
+        shared = len(set(left_tokens).intersection(set(right_tokens)))
+        if shared >= max(2, shorter_len * 0.5):
+            return True
+
     return False

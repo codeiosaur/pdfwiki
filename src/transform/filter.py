@@ -46,6 +46,13 @@ VAGUE_DESCRIPTORS = {
     "Introduction", "Conclusion", "Discussion", "Analysis", "Review", "History"
 }
 
+IMPERATIVE_STARTERS = {
+    "make", "record", "create", "do", "prepare", "write", "provide",
+    "give", "list", "show", "describe", "conduct", "submit", "search",
+    "locate", "analyze", "identify", "determine", "find", "calculate",
+    "compute", "apply", "solve", "examine", "check", "verify", "state",
+}
+
 
 def is_valid_concept(name: str) -> bool:
     """
@@ -105,6 +112,20 @@ def is_valid_concept(name: str) -> bool:
     for descriptor in VAGUE_DESCRIPTORS:
         if name.startswith(descriptor):
             return False
+
+    # Rule 7: Reject instruction-derived imperative phrases.
+    first_word = words[0].rstrip('.,!?;:').lower() if words else ""
+    if first_word in IMPERATIVE_STARTERS:
+        return False
+    
+    # Rule 8: Reject single-word generic/junk concepts that lack specificity.
+    GENERIC_JUNK_WORDS = {
+        "error", "cost", "value", "other", "information", "data",
+        "result", "output", "input", "process", "item", "thing",
+        "avg", "note", "summary", "description"
+    }
+    if len(words) == 1 and name.lower() in GENERIC_JUNK_WORDS:
+        return False
     
     return True
 

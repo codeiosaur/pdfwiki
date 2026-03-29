@@ -18,7 +18,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .vscode
- 
+.continue
+
 # Output files
 output*/
 vault/
@@ -27,3 +28,4 @@ tmp/
 *.pdf
 *.json
 .DS_STORE
+.aider*

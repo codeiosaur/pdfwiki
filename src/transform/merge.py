@@ -1,7 +1,44 @@
 from extract.fact_extractor import Fact
 from transform.cluster import _concepts_are_similar
+from transform.matching import tokenize_for_matching
+
+
+def _dedupe_exact_token_keys(grouped: dict[str, list[Fact]]) -> dict[str, list[Fact]]:
+    """
+    Merge concepts that normalize to the exact same token sequence.
+
+    This catches casing/punctuation variants early (for example FIFO vs Fifo).
+    """
+    merged: dict[str, list[Fact]] = {}
+    token_key_to_label: dict[tuple[str, ...], str] = {}
+
+    for concept, facts in grouped.items():
+        token_key = tuple(tokenize_for_matching(concept))
+        if not token_key:
+            token_key = (concept.lower().strip(),)
+
+        existing = token_key_to_label.get(token_key)
+        if existing is None:
+            token_key_to_label[token_key] = concept
+            merged[concept] = list(facts)
+            continue
+
+        # Keep more common label; if tied, keep shorter label.
+        existing_count = len(merged[existing])
+        current_count = len(facts)
+        if current_count > existing_count or (
+            current_count == existing_count and len(concept) < len(existing)
+        ):
+            existing_facts = merged.pop(existing)
+            merged[concept] = existing_facts + list(facts)
+            token_key_to_label[token_key] = concept
+        else:
+            merged[existing].extend(facts)
+
+    return merged
 
 def merge_similar_concepts(grouped: dict[str, list[Fact]]) -> dict[str, list[Fact]]:
+    grouped = _dedupe_exact_token_keys(grouped)
     merged: dict[str, list[Fact]] = {}
 
     for concept, facts in grouped.items():

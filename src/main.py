@@ -1,9 +1,19 @@
 from pathlib import Path
 from typing import Iterator, List, Optional
 import json
+import os
 import re
 
-from extract.fact_extractor import extract_facts_batched, Fact
+from extract.fact_extractor import (
+    extract_facts_batched,
+    extract_raw_statements_batched,
+    assign_concepts_to_statements,
+    Fact,
+    SEED_CONCEPTS,
+    ollama_client,
+    OLLAMA_MODEL,
+    _parse_json_object,
+)
 from ingest.pdf_loader import Chunk, load_pdf_chunks
 from transform.cluster import cluster_related_concepts
 from transform.grouping import group_facts_by_concept
@@ -11,10 +21,17 @@ from transform.canonicalize import canonicalize_concepts
 from transform.merge import merge_similar_concepts
 from transform.normalize import normalize_group_keys
 from transform.filter import filter_concepts
-from generate.pages import generate_pages, render_pages_document, render_pages_preview
+from generate.pages import (
+    generate_pages,
+    generate_pages_enhanced,
+    render_pages_document,
+    render_pages_preview,
+)
+from transform.matching import has_antonym_conflict, is_sibling, tokenize_for_matching
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 EVALUATION_CACHE_PATH = Path(__file__).with_name("evaluation_metrics.json")
+
 
 def generate_chunk_batches(chunks: List[Chunk], batch_size: int = 2) -> Iterator[List[Chunk]]:
     if batch_size < 1:
@@ -22,9 +39,70 @@ def generate_chunk_batches(chunks: List[Chunk], batch_size: int = 2) -> Iterator
     for i in range(0, len(chunks), batch_size):
         yield chunks[i : i + batch_size]
 
-def run_pipeline_parallel(pdf_path: str, batch_size: int = 2, max_workers: int = 5) -> List[Fact]:
-    # Step 3: End-to-end pipeline: PDF -> Chunks -> Facts.
+
+# ===================================================================
+# NEW: Two-pass pipeline (Pass 1: extract statements, Pass 2: assign concepts)
+# ===================================================================
+
+def run_pipeline_two_pass(
+    pdf_path: str,
+    batch_size: int = 2,
+    max_workers: int = 5,
+    max_chunks: Optional[int] = None,
+) -> List[Fact]:
+    """
+    Two-pass extraction pipeline:
+      Pass 1: Extract raw factual statements (no concept naming)
+      Pass 2: Assign concept names from seed list
+    
+    This produces much more consistent concept names from small models
+    because each pass only asks the model to do one thing.
+    """
     chunks = load_pdf_chunks(pdf_path=pdf_path)
+    if isinstance(max_chunks, int) and max_chunks > 0:
+        chunks = chunks[:max_chunks]
+
+    # Pass 1: Extract raw statements in parallel batches
+    chunk_batches = list(generate_chunk_batches(chunks, batch_size=batch_size))
+    all_statements: List[dict] = []
+
+    print(f"Pass 1: Extracting raw statements from {len(chunks)} chunks...")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(extract_raw_statements_batched, batch, batch_size)
+            for batch in chunk_batches
+        ]
+        for future in as_completed(futures):
+            try:
+                batch_statements = future.result()
+                all_statements.extend(batch_statements)
+            except Exception:
+                continue
+
+    print(f"Pass 1 complete: {len(all_statements)} raw statements extracted")
+
+    # Pass 2: Assign concept names (sequential to keep seed list coherent)
+    print(f"Pass 2: Assigning concept names to {len(all_statements)} statements...")
+    all_facts = assign_concepts_to_statements(all_statements)
+    print(f"Pass 2 complete: {len(all_facts)} facts with concept names")
+
+    return all_facts
+
+
+# ===================================================================
+# Legacy single-pass pipeline (kept for comparison / fallback)
+# ===================================================================
+
+def run_pipeline_parallel(
+    pdf_path: str,
+    batch_size: int = 2,
+    max_workers: int = 5,
+    max_chunks: Optional[int] = None,
+) -> List[Fact]:
+    """Legacy single-pass pipeline: PDF -> Chunks -> Facts."""
+    chunks = load_pdf_chunks(pdf_path=pdf_path)
+    if isinstance(max_chunks, int) and max_chunks > 0:
+        chunks = chunks[:max_chunks]
     chunk_batches = list(generate_chunk_batches(chunks, batch_size=batch_size))
 
     all_facts: List[Fact] = []
@@ -45,6 +123,88 @@ def run_pipeline_parallel(pdf_path: str, batch_size: int = 2, max_workers: int =
     return all_facts
 
 
+# ===================================================================
+# Fix 5: Post-extraction consolidation pass
+# ===================================================================
+
+def consolidate_concepts_llm(grouped: dict[str, List[Fact]]) -> dict[str, List[Fact]]:
+    """
+    Ask the LLM which concept groups should be merged.
+    
+    This is a simpler task than extraction — the model just needs to
+    identify duplicates in a flat list of names. Works well on 8B models.
+    """
+    concept_names = list(grouped.keys())
+    if len(concept_names) <= 3:
+        return grouped
+
+    concept_list = "\n".join(f"  - {c}" for c in concept_names)
+
+    prompt = f"""These are concept names extracted from a textbook chapter.
+Some may refer to the same concept under different names.
+
+Concept list:
+{concept_list}
+
+Rules:
+- Only merge concepts that are TRULY the same thing (just named differently).
+- Do NOT merge related-but-distinct concepts.
+- "Inventory Fraud" and "Inventory Shrinkage" are DIFFERENT — do not merge.
+- "Gross Profit" and "Gross Margin" may be the same — merge if so.
+- "FIFO" and "First In First Out" are the same — merge.
+
+Output a JSON object mapping duplicate names to their canonical name.
+Only include concepts that need merging. Use the more standard name as canonical.
+If no merges needed, output: {{}}
+
+Example: {{"FIFO": "First In First Out", "Gross Margin": "Gross Profit"}}"""
+
+    try:
+        response = ollama_client.generate(
+            model=OLLAMA_MODEL,
+            prompt=prompt,
+            max_tokens=400,
+        )
+        raw_content = response.choices[0].message.content or ""
+    except Exception:
+        return grouped
+
+    parsed = _parse_json_object(raw_content)
+    if not isinstance(parsed, dict):
+        return grouped
+
+    # Apply merges
+    merge_map: dict[str, str] = {}
+    for source, target in parsed.items():
+        if (
+            isinstance(source, str)
+            and isinstance(target, str)
+            and source in grouped
+            and target in grouped
+            and source != target
+        ):
+            # Don't merge antonyms or siblings
+            if has_antonym_conflict(source, target):
+                continue
+            if is_sibling(source, target):
+                continue
+            merge_map[source] = target
+
+    if not merge_map:
+        return grouped
+
+    result: dict[str, List[Fact]] = {}
+    for concept, facts in grouped.items():
+        target = merge_map.get(concept, concept)
+        result.setdefault(target, []).extend(facts)
+
+    merged_count = len(grouped) - len(result)
+    if merged_count > 0:
+        print(f"Consolidation: merged {merged_count} duplicate concept groups")
+
+    return result
+
+
 def apply_canonical_map(
     grouped: dict[str, List[Fact]],
     canonical_map: dict[str, Optional[str]],
@@ -55,6 +215,20 @@ def apply_canonical_map(
         target_name = canonical_name if canonical_name is not None else concept
         remapped.setdefault(target_name, []).extend(facts)
     return remapped
+
+
+def prune_low_signal_concepts(
+    grouped: dict[str, List[Fact]],
+    min_facts_per_concept: int = 1,
+) -> dict[str, List[Fact]]:
+    if min_facts_per_concept <= 1:
+        return grouped
+
+    return {
+        concept: facts
+        for concept, facts in grouped.items()
+        if len(facts) >= min_facts_per_concept
+    }
 
 def evaluate_concepts(grouped: dict[str, list]) -> dict:
     concepts = list(grouped.keys())
@@ -74,10 +248,12 @@ def evaluate_concepts(grouped: dict[str, list]) -> dict:
         words_lower = [w.lower() for w in words]
 
         has_filler = any(w in filler_words for w in words_lower)
-        has_plural = any(
-            w.endswith("s") and len(w) > 3 and not original.isupper()
-            for w, original in zip(words_lower, words)
-        )
+        has_plural = (
+            len(words) == 1
+            and words_lower[0].endswith("s")
+            and len(words_lower[0]) > 3
+            and not words[0].isupper()
+        ) if words else False
         has_lowercase_acronym = any(w in lowercase_acronyms for w in words)
 
         if has_filler or has_plural or has_lowercase_acronym:
@@ -86,8 +262,8 @@ def evaluate_concepts(grouped: dict[str, list]) -> dict:
     near_duplicates: List[tuple[str, str]] = []
 
     def differs_by_one_word(left: str, right: str) -> bool:
-        left_words = left.lower().split()
-        right_words = right.lower().split()
+        left_words = tokenize_for_matching(left)
+        right_words = tokenize_for_matching(right)
 
         if min(len(left_words), len(right_words)) < 2:
             return False
@@ -105,8 +281,13 @@ def evaluate_concepts(grouped: dict[str, list]) -> dict:
 
     for i, left in enumerate(concepts):
         for right in concepts[i + 1 :]:
-            left_words = left.lower().split()
-            right_words = right.lower().split()
+            if has_antonym_conflict(left, right):
+                continue
+            if is_sibling(left, right):
+                continue
+
+            left_words = tokenize_for_matching(left)
+            right_words = tokenize_for_matching(right)
             shorter_words = left_words if len(left_words) <= len(right_words) else right_words
             longer_words = right_words if len(right_words) >= len(left_words) else left_words
             is_substring_match = (
@@ -146,7 +327,6 @@ def save_evaluation_snapshot(evaluation: dict) -> None:
 def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None:
     warnings: List[str] = []
 
-    # Assertion 1: singleton_ratio should be < 0.8.
     singleton_value = current.get("singleton_ratio", 0.0)
     if isinstance(singleton_value, (int, float)):
         singleton_ratio = singleton_value / 100.0 if singleton_value > 1 else singleton_value
@@ -156,7 +336,6 @@ def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None
             )
 
     if previous is not None:
-        # Assertion 2: suspicious_concepts count should decrease over time.
         current_suspicious = current.get("suspicious_concepts", [])
         previous_suspicious = previous.get("suspicious_concepts", [])
         current_count = len(current_suspicious) if isinstance(current_suspicious, list) else 0
@@ -167,7 +346,6 @@ def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None
                 f"suspicious_concepts did not decrease ({previous_count} -> {current_count})"
             )
 
-        # Assertion 3: total_concepts should not drop by more than 30%.
         current_total = current.get("total_concepts", 0)
         previous_total = previous.get("total_concepts", 0)
         if (
@@ -184,41 +362,78 @@ def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None
         print(f"WARNING: {warning}")
 
 if __name__ == "__main__":
-    # Step 4: Demo run and print first 5 facts.
     demo_pdf_path = "./sample-accounting-openstax.pdf"
-    all_facts = run_pipeline_parallel(demo_pdf_path, batch_size=2, max_workers=5)
+    batch_size = int(os.getenv("PIPELINE_BATCH_SIZE", "2"))
+    max_workers = int(os.getenv("PIPELINE_MAX_WORKERS", "5"))
+    max_chunks_env = os.getenv("PIPELINE_MAX_CHUNKS", "").strip()
+    max_chunks = int(max_chunks_env) if max_chunks_env.isdigit() else None
+
+    # Use two-pass pipeline by default; set TWO_PASS=0 for legacy mode
+    use_two_pass = os.getenv("TWO_PASS", "1").strip().lower() in {"1", "true", "yes"}
+
+    if use_two_pass:
+        print("=== USING TWO-PASS PIPELINE ===")
+        all_facts = run_pipeline_two_pass(
+            demo_pdf_path,
+            batch_size=batch_size,
+            max_workers=max_workers,
+            max_chunks=max_chunks,
+        )
+    else:
+        print("=== USING LEGACY SINGLE-PASS PIPELINE ===")
+        all_facts = run_pipeline_parallel(
+            demo_pdf_path,
+            batch_size=batch_size,
+            max_workers=max_workers,
+            max_chunks=max_chunks,
+        )
+
     print(f"Extracted {len(all_facts)} facts")
     for fact in all_facts[:5]:
         print(f"{fact.id} | {fact.concept} | {fact.content} "
               f"| chunk={fact.source_chunk_id}")
     
-    # Step 4.5: Filter concepts by eligibility (reject examples, proper nouns, etc.)
+    # Filter concepts by eligibility
     all_facts = filter_concepts(all_facts)
     print(f"After filtering: {len(all_facts)} valid concept facts")
     
     grouped = group_facts_by_concept(all_facts)
 
-    # Step 5: Deterministic rule-based normalization before LLM canonicalization.
+    # Deterministic rule-based normalization
     rule_normalized_grouped = normalize_group_keys(grouped)
 
-    # Step 6: Canonicalize normalized concepts (cache-backed to avoid redundant LLM calls).
+    # Canonicalize normalized concepts
     concept_names = list(rule_normalized_grouped.keys())
     canonical_map = canonicalize_concepts(concept_names)
 
-    # Step 7: Build final grouped map with canonical names.
+    # Build final grouped map with canonical names
     final_grouped = apply_canonical_map(rule_normalized_grouped, canonical_map)
 
     final_grouped = merge_similar_concepts(final_grouped)
     final_grouped = cluster_related_concepts(final_grouped)
 
-    # Step 8: Print final grouped concept counts.
-    for concept, facts in final_grouped.items():
-        print(concept, "->", len(facts))
+    # Fix 5: Post-extraction consolidation pass
+    if use_two_pass:
+        final_grouped = consolidate_concepts_llm(final_grouped)
 
-    # Step 9: Generate simple concept pages before evaluation output.
-    pages = generate_pages(final_grouped)
+    min_facts = int(os.getenv("PIPELINE_MIN_FACTS_PER_CONCEPT", "1"))
+    pre_prune_count = len(final_grouped)
+    final_grouped = prune_low_signal_concepts(final_grouped, min_facts_per_concept=min_facts)
+    pruned_count = max(0, pre_prune_count - len(final_grouped))
+    if pruned_count:
+        print(f"Pruned {pruned_count} low-signal concepts (< {min_facts} facts)")
+
+    # Print final grouped concept counts
+    print("\n=== CONCEPT GROUPS ===")
+    for concept, facts in sorted(final_grouped.items(), key=lambda x: -len(x[1])):
+        print(f"  {concept} -> {len(facts)} facts")
+
+    # Generate concept pages
+    enhanced_mode = os.getenv("ENHANCED_PAGE_MODE", "0").strip().lower() in {"1", "true", "yes"}
+    pages = generate_pages_enhanced(final_grouped) if enhanced_mode else generate_pages(final_grouped)
     skipped_pages = max(0, len(final_grouped) - len(pages))
-    print(f"Generated {len(pages)} concept pages")
+    mode_label = "enhanced" if enhanced_mode else "standard"
+    print(f"\nGenerated {len(pages)} concept pages ({mode_label} mode)")
     if skipped_pages:
         print(f"Skipped {skipped_pages} empty/low-signal pages")
 
@@ -228,7 +443,11 @@ if __name__ == "__main__":
         print(preview)
 
     pages_doc = render_pages_document(pages)
-    pages_output_path = Path("output") / "concept_pages_sample.md"
+    pages_output_path = (
+        Path("output") / "concept_pages_enhanced" / "concept_pages_sample.md"
+        if enhanced_mode
+        else Path("output") / "concept_pages_sample.md"
+    )
     pages_output_path.parent.mkdir(parents=True, exist_ok=True)
     pages_output_path.write_text(pages_doc, encoding="utf-8")
     print(f"Saved combined pages to {pages_output_path}")
