@@ -5,18 +5,26 @@ from transform.matching import has_antonym_conflict
 
 
 STOPWORDS = {"a", "an", "the", "of", "for", "and", "or", "to", "in", "on", "with", "by"}
-ACRONYM_CANONICAL = {
-    "avg": "AVG",
-    "cogs": "COGS",
-    "dsi": "DSI",
-    "epc": "EPC",
-    "epcs": "EPC",
-    "fifo": "FIFO",
-    "gaap": "GAAP",
-    "ifrs": "IFRS",
-    "lifo": "LIFO",
-    "upc": "UPC",
-}
+
+# Auto-detected: any all-caps token 2-6 chars in a concept name is preserved as-is.
+# This dict provides normalization for known lowercase variants only.
+# It will be populated dynamically from concept names at render time.
+# Seed with empty dict — _build_acronym_map() fills it from actual data.
+ACRONYM_CANONICAL: dict[str, str] = {}
+
+
+def _build_acronym_map(concept_names: list[str]) -> dict[str, str]:
+    """
+    Build an acronym normalization map from the actual concept names.
+    Any all-caps token (2-6 chars) found in concept names becomes canonical.
+    """
+    acronyms: dict[str, str] = {}
+    for name in concept_names:
+        for token in name.split():
+            clean = re.sub(r"[^A-Za-z0-9]", "", token)
+            if clean.isupper() and 2 <= len(clean) <= 6:
+                acronyms[clean.lower()] = clean
+    return acronyms
 KEY_POINT_NOISE_MARKERS = {
     "figure",
     "table",
@@ -82,37 +90,12 @@ SEMANTIC_CAUTION_MARKERS = {
     "warning",
 }
 
-ACCOUNTING_DOMAIN_MARKERS = {
-    "inventory",
-    "cogs",
-    "cost of goods sold",
-    "gross margin",
-    "gross profit",
-    "ratio",
-    "fifo",
-    "lifo",
-    "ifrs",
-    "gaap",
-    "perpetual",
-    "periodic",
-    "consignment",
-    "valuation",
-}
 
-INCOMPATIBLE_KEY_POINT_PATTERNS = {
-    "periodic": [
-        r"real[\s-]?time",
-        r"ongoing\s+basis",
-        r"each\s+individual\s+sale",
-        r"continuously\s+as\s+each\s+transaction",
-    ],
-    "perpetual": [
-        r"end\s+of\s+the\s+reporting\s+period",
-        r"end\s+of\s+each\s+month",
-        r"month,\s*quarter,\s*or\s*year",
-        r"updated\s+at\s+the\s+end\s+of\s+the\s+period",
-    ],
-}
+# (Domain-specific markers removed — section caps are now uniform.)
+
+
+# (Incompatible key-point patterns removed — antonym-aware clustering
+#  in matching.py now prevents cross-contamination upstream.)
 
 
 def _unique_fact_contents(facts: list[Fact]) -> list[str]:
@@ -260,10 +243,6 @@ def _looks_like_formula(text: str) -> bool:
 
     return False
 
-
-def _is_accounting_domain(concept: str, fact_contents: list[str]) -> bool:
-    bag = " ".join([concept] + fact_contents).lower()
-    return any(marker in bag for marker in ACCOUNTING_DOMAIN_MARKERS)
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -708,6 +687,8 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
     """
     pages: dict[str, str] = {}
     concept_names = list(grouped.keys())
+    global ACRONYM_CANONICAL
+    ACRONYM_CANONICAL = _build_acronym_map(concept_names)
     related_map = _build_related_concepts(concept_names)
 
     for concept, facts in grouped.items():
@@ -731,15 +712,6 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
             if not _is_low_signal_key_point(item)
             and not has_antonym_conflict(concept, item)
         ]
-
-        concept_lower = concept.lower()
-        for concept_marker, patterns in INCOMPATIBLE_KEY_POINT_PATTERNS.items():
-            if concept_marker in concept_lower:
-                key_points = [
-                    item
-                    for item in key_points
-                    if not any(re.search(pattern, item.lower()) for pattern in patterns)
-                ]
 
         selected_definition = _select_fallback_definition(
             concept=concept,
@@ -830,6 +802,8 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
     """
     pages: dict[str, str] = {}
     concept_names = list(grouped.keys())
+    global ACRONYM_CANONICAL
+    ACRONYM_CANONICAL = _build_acronym_map(concept_names)
     related_map = _build_related_concepts(concept_names)
 
     for concept, facts in grouped.items():
@@ -867,15 +841,6 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
         key_points = [item for item in key_points if not _is_low_signal_key_point(item)]
         interpretations = [item for item in interpretations if not _is_low_signal_key_point(item)]
 
-        concept_lower = concept.lower()
-        for concept_marker, patterns in INCOMPATIBLE_KEY_POINT_PATTERNS.items():
-            if concept_marker in concept_lower:
-                def _compatible(text: str) -> bool:
-                    return not any(re.search(pattern, text.lower()) for pattern in patterns)
-
-                key_points = [item for item in key_points if _compatible(item)]
-                interpretations = [item for item in interpretations if _compatible(item)]
-
         selected_definition = _select_fallback_definition(
             concept=concept,
             definitions=definitions,
@@ -883,8 +848,6 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
             fact_contents=fact_contents,
         )
         definition = selected_definition if selected_definition is not None else "No definition available."
-
-        is_accounting = _is_accounting_domain(concept, fact_contents)
 
         definition_norm = _normalize_text_for_compare(definition)
         key_points = [
@@ -894,19 +857,12 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
             item for item in interpretations if _normalize_text_for_compare(item) != definition_norm
         ]
 
-        # Deterministic section caps keep pages concise and sample-like.
-        if is_accounting:
-            formulas = _trim_section(formulas, 3)
-            interpretations = _trim_section(interpretations, 4)
-            examples = _trim_section(examples, 2)
-            cautions = _trim_section(cautions, 3)
-            key_points = _trim_section(key_points, 4)
-        else:
-            formulas = _trim_section(formulas, 2)
-            interpretations = _trim_section(interpretations, 3)
-            examples = _trim_section(examples, 2)
-            cautions = _trim_section(cautions, 2)
-            key_points = _trim_section(key_points, 3)
+        # Uniform section caps (domain-agnostic).
+        formulas = _trim_section(formulas, 3)
+        interpretations = _trim_section(interpretations, 4)
+        examples = _trim_section(examples, 2)
+        cautions = _trim_section(cautions, 3)
+        key_points = _trim_section(key_points, 4)
 
         if (
             definition == "No definition available."
@@ -981,8 +937,7 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
             definition_rendered[0] if definition_rendered else definition,
         ]
 
-        # Accounting-first section ordering: Formula -> Interpretation -> Example -> Cautions.
-        # Non-accounting pages still use the same order for consistency.
+        # Section ordering: Formula -> Interpretation -> Example -> Cautions -> Key Points.
         if formula_rendered:
             lines.extend(["", "---", "", "## Formula", ""])
             for item in formula_rendered:
@@ -1069,3 +1024,381 @@ def render_pages_preview(pages: dict[str, str], max_pages: int = 2) -> str:
         sections.append("")
 
     return "\n".join(sections).rstrip()
+
+# ===================================================================
+# Fix 6: Wiki-style page renderer with templates and wikilinks
+# ===================================================================
+
+# Concept-type classification for template selection (domain-agnostic)
+RATIO_KEYWORDS = {"ratio", "rate", "turnover", "margin", "index", "coefficient"}
+METHOD_KEYWORDS = {"method", "technique", "procedure", "approach", "identification", "allocation"}
+SYSTEM_KEYWORDS = {"system", "framework", "model"}
+
+
+def _infer_concept_type_from_facts(fact_contents: list[str]) -> Optional[str]:
+    """
+    Infer concept type from the content of its facts rather than its name.
+    Returns 'ratio' | 'method' | 'system' | None.
+    """
+    bag = " ".join(fact_contents).lower()
+
+    # Strong formula signal -> ratio
+    formula_signals = 0
+    if re.search(r"\S\s*[=/÷]\s*\S", bag):
+        formula_signals += 2
+    if any(w in bag for w in ("divided by", "multiplied by", "per unit")):
+        formula_signals += 1
+    if any(w in bag for w in ("measures", "indicates", "higher ratio", "lower ratio")):
+        formula_signals += 1
+    if formula_signals >= 2:
+        return "ratio"
+
+    # System signal: ongoing/periodic process language
+    system_signals = 0
+    if any(w in bag for w in ("continuously", "periodically", "real-time", "ongoing")):
+        system_signals += 2
+    if any(w in bag for w in ("updates", "tracks", "maintains")):
+        system_signals += 1
+    if any(w in bag for w in ("at the time of", "at the end of", "as each")):
+        system_signals += 1
+    if system_signals >= 2:
+        return "system"
+
+    # Method signal: technique/procedure that assigns, records, or allocates
+    method_signals = 0
+    if any(w in bag for w in ("method", "technique", "procedure", "approach")):
+        method_signals += 2
+    if any(w in bag for w in ("records", "assigns", "allocates", "computes", "estimates")):
+        method_signals += 1
+    if any(w in bag for w in ("cost", "value", "price", "amount", "sold")):
+        method_signals += 1
+    if any(w in bag for w in ("as if", "based on", "in order of", "oldest", "most recent")):
+        method_signals += 1
+    if method_signals >= 2:
+        return "method"
+
+    return None
+
+
+def _classify_concept_type(concept: str, fact_contents: Optional[list[str]] = None) -> str:
+    """
+    Classify a concept for template selection: ratio | method | system | general.
+
+    Strategy (domain-agnostic):
+    1. Check if concept name contains generic template keywords.
+    2. If no keyword match, infer from the concept's fact contents.
+    3. Default to 'general'.
+    """
+    lower = concept.lower().strip()
+    tokens = set(re.findall(r"[a-z]+", lower))
+
+    if tokens.intersection(RATIO_KEYWORDS):
+        return "ratio"
+    if tokens.intersection(METHOD_KEYWORDS):
+        return "method"
+    if tokens.intersection(SYSTEM_KEYWORDS):
+        return "system"
+
+    # Infer from fact content when name keywords aren't enough
+    if fact_contents:
+        inferred = _infer_concept_type_from_facts(fact_contents)
+        if inferred:
+            return inferred
+
+    return "general"
+
+
+def _build_related_concepts_by_chunks(
+    concept: str,
+    concept_chunks: dict[str, set[str]],
+    all_concepts: list[str],
+    max_related: int = 5,
+) -> list[str]:
+    """
+    Build related concepts by source-chunk co-occurrence (domain-agnostic).
+
+    Concepts that were extracted from the same text chunks are inherently
+    related — they appeared in the same passage of the source material.
+    Falls back to token overlap when chunk data is sparse.
+    """
+    my_chunks = concept_chunks.get(concept, set())
+    scored: list[tuple[float, int, str]] = []
+
+    for candidate in all_concepts:
+        if candidate == concept:
+            continue
+
+        candidate_chunks = concept_chunks.get(candidate, set())
+
+        # Primary signal: shared source chunks
+        shared_chunks = len(my_chunks.intersection(candidate_chunks))
+
+        # Secondary signal: token overlap in concept names
+        token_overlap = len(
+            _concept_tokens(concept).intersection(_concept_tokens(candidate))
+        )
+
+        if shared_chunks > 0 or token_overlap > 0:
+            # Weight chunk co-occurrence much higher than name similarity
+            score = shared_chunks * 10 + token_overlap
+            scored.append((score, token_overlap, candidate))
+
+    scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
+    return [name for _, _, name in scored[:max_related]]
+
+
+def _inject_wikilinks(text: str, all_titles: set[str], current_title: str) -> str:
+    """
+    Replace occurrences of other concept titles with [[wikilinks]] in body text.
+    Only links each concept once (first occurrence).
+    """
+    if not all_titles:
+        return text
+
+    # Sort by length descending so longer names match first
+    sorted_titles = sorted(all_titles - {current_title}, key=len, reverse=True)
+    linked: set[str] = set()
+
+    for title in sorted_titles:
+        if title in linked:
+            continue
+        pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
+        if pattern.search(text):
+            text = pattern.sub(f"[[{title}]]", text, count=1)
+            linked.add(title)
+
+    return text
+
+
+def _promote_all_facts_to_content(
+    fact_contents: list[str],
+    definition: str,
+) -> list[str]:
+    """
+    Return all facts that aren't the definition, aren't instructions,
+    and aren't low-signal.
+    """
+    definition_norm = _normalize_text_for_compare(definition)
+    promoted: list[str] = []
+
+    for item in fact_contents:
+        if _has_template_markers(item):
+            continue
+        if _is_low_signal_key_point(item):
+            continue
+        if _normalize_text_for_compare(item) == definition_norm:
+            continue
+        base_class = classify_fact(item)
+        if base_class == "instruction":
+            continue
+        promoted.append(item)
+
+    return promoted
+
+
+def generate_pages_wiki(
+    grouped: dict[str, list[Fact]], include_empty_pages: bool = False
+) -> dict[str, str]:
+    """
+    Wiki-style page renderer with:
+    - Concept-type templates (ratio, method, system, general)
+    - Wikilinks in body text
+    - Chunk-co-occurrence related concepts
+    - Intro paragraph instead of duplicate lead/definition
+    - All non-duplicate facts promoted to content
+    """
+    pages: dict[str, str] = {}
+    concept_names = list(grouped.keys())
+
+    global ACRONYM_CANONICAL
+    ACRONYM_CANONICAL = _build_acronym_map(concept_names)
+
+    all_display_titles = {normalize_page_title(c) for c in concept_names}
+
+    # Build chunk co-occurrence map for related concepts (domain-agnostic)
+    concept_chunks: dict[str, set[str]] = {}
+    for concept, facts in grouped.items():
+        concept_chunks[concept] = {
+            f.source_chunk_id for f in facts if f.source_chunk_id
+        }
+
+    for concept, facts in grouped.items():
+        display_title = normalize_page_title(concept)
+        fact_contents = _unique_fact_contents(facts)
+        text_to_sources = _fact_sources(facts)
+        concept_type = _classify_concept_type(concept, fact_contents)
+
+        # --- Select definition ---
+        definitions: list[str] = []
+        key_points_raw: list[str] = []
+
+        for item in fact_contents:
+            if _has_template_markers(item):
+                continue
+            label = classify_fact(item)
+            if label == "definition":
+                definitions.append(item)
+            elif label == "key_point":
+                key_points_raw.append(item)
+
+        selected_definition = _select_fallback_definition(
+            concept=concept,
+            definitions=definitions,
+            key_points=key_points_raw,
+            fact_contents=fact_contents,
+        )
+        definition = selected_definition if selected_definition else "No definition available."
+
+        # --- Gather ALL usable content ---
+        all_content = _promote_all_facts_to_content(fact_contents, definition)
+
+        formulas: list[str] = []
+        interpretations: list[str] = []
+        cautions: list[str] = []
+        details: list[str] = []
+
+        for item in all_content:
+            sem = classify_semantic_fact(item)
+            if sem == "formula":
+                formulas.append(item)
+            elif sem == "interpretation":
+                interpretations.append(item)
+            elif sem == "caution":
+                cautions.append(item)
+            else:
+                details.append(item)
+
+        formulas = _trim_section(formulas, 3)
+        interpretations = _trim_section(interpretations, 4)
+        cautions = _trim_section(cautions, 3)
+        details = _trim_section(details, 6)
+
+        has_content = (
+            definition != "No definition available."
+            or formulas or interpretations or cautions or details
+        )
+        if not has_content and not include_empty_pages:
+            continue
+
+        # --- Build intro paragraph ---
+        intro = _emphasize_concept_once(definition, display_title)
+        if interpretations:
+            extra = interpretations[0].strip()
+            extra = extra[0].upper() + extra[1:] if extra else extra
+            intro = f"{intro} {extra}"
+        intro = _inject_wikilinks(intro, all_display_titles, display_title)
+
+        # --- Citations ---
+        citation_index = 1
+        citation_map: dict[tuple[str, ...], int] = {}
+
+        definition_rendered, definition_notes, citation_index = _citation_suffixes(
+            [definition], text_to_sources, citation_map, citation_index,
+        )
+        formula_rendered, formula_notes, citation_index = _citation_suffixes(
+            formulas, text_to_sources, citation_map, citation_index,
+        )
+        interp_rendered, interp_notes, citation_index = _citation_suffixes(
+            interpretations, text_to_sources, citation_map, citation_index,
+        )
+        caution_rendered, caution_notes, citation_index = _citation_suffixes(
+            cautions, text_to_sources, citation_map, citation_index,
+        )
+        detail_rendered, detail_notes, citation_index = _citation_suffixes(
+            details, text_to_sources, citation_map, citation_index,
+        )
+
+        combined_notes = (
+            definition_notes + formula_notes + interp_notes
+            + caution_notes + detail_notes
+        )
+
+        # --- Assemble page by concept type ---
+        lines: list[str] = [f"# {display_title}", "", intro, "", "---"]
+
+        if concept_type == "ratio":
+            lines.extend(["", "## Definition", ""])
+            lines.append(definition_rendered[0] if definition_rendered else definition)
+
+            if formula_rendered:
+                lines.extend(["", "---", "", "## Formula", ""])
+                for item in formula_rendered:
+                    lines.append(f"```\n{item}\n```")
+                    lines.append("")
+
+            if interp_rendered:
+                lines.extend(["", "---", "", "## What It Tells You", ""])
+                for item in interp_rendered:
+                    wi = _inject_wikilinks(item, all_display_titles, display_title)
+                    lines.append(f"- {wi}")
+                lines.append("")
+
+            if detail_rendered:
+                lines.extend(["", "---", "", "## Key Points", ""])
+                for item in detail_rendered:
+                    wi = _inject_wikilinks(item, all_display_titles, display_title)
+                    lines.append(f"- {wi}")
+                lines.append("")
+
+        elif concept_type in ("method", "system"):
+            lines.extend(["", "## Definition", ""])
+            lines.append(definition_rendered[0] if definition_rendered else definition)
+
+            if detail_rendered:
+                lines.extend(["", "---", "", "## How It Works", ""])
+                for item in detail_rendered:
+                    wi = _inject_wikilinks(item, all_display_titles, display_title)
+                    lines.append(f"- {wi}")
+                lines.append("")
+
+            if formula_rendered:
+                lines.extend(["", "---", "", "## Formula", ""])
+                for item in formula_rendered:
+                    lines.append(f"```\n{item}\n```")
+                    lines.append("")
+
+            if interp_rendered:
+                lines.extend(["", "---", "", "## Key Points", ""])
+                for item in interp_rendered:
+                    wi = _inject_wikilinks(item, all_display_titles, display_title)
+                    lines.append(f"- {wi}")
+                lines.append("")
+
+        else:
+            lines.extend(["", "## Definition", ""])
+            lines.append(definition_rendered[0] if definition_rendered else definition)
+
+            combined_detail = detail_rendered + interp_rendered
+            if combined_detail:
+                lines.extend(["", "---", "", "## Key Points", ""])
+                for item in combined_detail:
+                    wi = _inject_wikilinks(item, all_display_titles, display_title)
+                    lines.append(f"- {wi}")
+                lines.append("")
+
+        if caution_rendered:
+            lines.extend(["", "---", "", "## Cautions", ""])
+            for item in caution_rendered:
+                wi = _inject_wikilinks(item, all_display_titles, display_title)
+                lines.append(f"- {wi}")
+            lines.append("")
+
+        # Related Concepts (domain-aware)
+        lines.extend(["", "---", "", "## Related Concepts"])
+        related = _build_related_concepts_by_chunks(concept, concept_chunks, concept_names)
+        if related:
+            for item in related:
+                title = normalize_page_title(item)
+                lines.append(f"- [[{title}]]")
+        else:
+            lines.append("- None")
+
+        lines.extend(["", "---", "", "## Sources"])
+        if combined_notes:
+            lines.extend(combined_notes)
+        else:
+            lines.append("- None")
+
+        pages[display_title] = "\n".join(lines)
+
+    return pages

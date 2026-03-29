@@ -24,6 +24,7 @@ from transform.filter import filter_concepts
 from generate.pages import (
     generate_pages,
     generate_pages_enhanced,
+    generate_pages_wiki,
     render_pages_document,
     render_pages_preview,
 )
@@ -430,9 +431,13 @@ if __name__ == "__main__":
 
     # Generate concept pages
     enhanced_mode = os.getenv("ENHANCED_PAGE_MODE", "0").strip().lower() in {"1", "true", "yes"}
-    pages = generate_pages_enhanced(final_grouped) if enhanced_mode else generate_pages(final_grouped)
+    if enhanced_mode:
+        pages = generate_pages_wiki(final_grouped)
+        mode_label = "wiki"
+    else:
+        pages = generate_pages(final_grouped)
+        mode_label = "standard"
     skipped_pages = max(0, len(final_grouped) - len(pages))
-    mode_label = "enhanced" if enhanced_mode else "standard"
     print(f"\nGenerated {len(pages)} concept pages ({mode_label} mode)")
     if skipped_pages:
         print(f"Skipped {skipped_pages} empty/low-signal pages")
