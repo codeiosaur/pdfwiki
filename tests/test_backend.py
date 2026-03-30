@@ -96,30 +96,31 @@ class TestKeyMasking:
 
     def test_mask_short_key(self):
         result = _mask_key("abc")
-        assert result == "****"
+        assert result == "(set)"
         assert "abc" not in result
 
     def test_mask_normal_key(self):
         result = _mask_key("sk-ant-1234567890abcdef")
-        assert result == "sk-a...cdef"
+        assert result == "(set)"
+        assert "sk-ant" not in result
         assert "1234567890" not in result
+        assert "cdef" not in result
 
     def test_mask_exact_boundary(self):
-        # 8 chars — should still mask
         result = _mask_key("12345678")
-        assert result == "****"
+        assert result == "(set)"
 
     def test_mask_nine_chars(self):
-        # 9 chars — first 4 + last 4
         result = _mask_key("123456789")
-        assert result == "1234...6789"
+        assert result == "(set)"
 
-    def test_mask_never_reveals_full_key(self):
-        """No key, regardless of length, should appear in full."""
+    def test_mask_never_reveals_any_key_content(self):
+        """No key, regardless of length, should appear in any form."""
         for key in ["a", "ab", "abc", "abcd", "abcde", "sk-ant-xxxxxxxxxxxx"]:
             masked = _mask_key(key)
-            if len(key) > 8:
+            if key:  # non-empty keys
                 assert key not in masked
+                assert masked == "(set)"
 
 
 # ===================================================================

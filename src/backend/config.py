@@ -49,12 +49,10 @@ def _load_dotenv() -> None:
 
 
 def _mask_key(key: Optional[str]) -> str:
-    """Return a masked version of an API key for safe logging."""
+    """Report whether an API key is set, without revealing any part of it."""
     if not key:
         return "(not set)"
-    if len(key) <= 8:
-        return "****"
-    return f"{key[:4]}...{key[-4:]}"
+    return "(set)"
 
 
 def get_env(name: str, default: str = "") -> str:
