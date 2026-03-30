@@ -12,7 +12,6 @@ Supports three modes controlled by environment variables:
     LLM_PROVIDER=anthropic
     LLM_MODEL=claude-haiku-4-5-20251001
     ANTHROPIC_API_KEY=sk-ant-...
-  For openai_compat, set OPENROUTER_API_KEY or OPENAI_API_KEY as needed.
 
   HYBRID (local extraction, API for concept assignment):
     PASS1_PROVIDER=openai_compat
@@ -167,5 +166,13 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
     p2_config = _build_config(p2_provider, p2_base_url, p2_model, label="pass2-assign")
     log_backend_config("pass2-assign", p2_provider, p2_base_url, p2_model, p2_config.api_key)
     pass2 = _create_backend_from_config(p2_config)
+
+    # Configure fallback models for Pass 2 (OpenRouter-specific)
+    fallback_models_raw = get_env("PASS2_FALLBACK_MODELS", "")
+    if fallback_models_raw.strip() and hasattr(pass2, "set_fallback_models"):
+        fallback_models = [m.strip() for m in fallback_models_raw.split(",") if m.strip()]
+        if fallback_models:
+            pass2.set_fallback_models(fallback_models)
+            print(f"  [pass2-assign] Fallback models: {fallback_models}")
 
     return pass1, pass2

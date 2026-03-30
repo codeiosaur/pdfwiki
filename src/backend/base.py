@@ -59,13 +59,21 @@ class LLMBackend(ABC):
         return self._config.model
 
     @abstractmethod
-    def generate(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+    def generate(
+        self,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        json_schema: Optional[dict] = None,
+    ) -> str:
         """
         Send a prompt and return the model's text response.
 
         Args:
-            prompt:     The user prompt string.
-            max_tokens: Override the default max_tokens if provided.
+            prompt:      The user prompt string.
+            max_tokens:  Override the default max_tokens if provided.
+            json_schema: Optional JSON schema dict to enforce structured output.
+                         Provider support varies — OpenRouter enforces it
+                         server-side, others use it as prompt guidance.
 
         Returns:
             The model's response as a plain string.

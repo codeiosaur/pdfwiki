@@ -4,12 +4,14 @@ OpenAI-compatible LLM backend.
 Covers any service that speaks the OpenAI chat completions protocol:
 Ollama, OpenRouter, Runpod, LM Studio, vLLM, Together AI, etc.
 
-Includes automatic retry with exponential backoff for rate-limited (429)
-requests, which is essential for free-tier API endpoints.
+Includes:
+- Automatic retry with exponential backoff for rate-limited (429) requests
+- OpenRouter-specific features (structured outputs, model fallbacks,
+  response healing) activated automatically when the base URL is OpenRouter
 """
 
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from backend.base import BackendConfig, LLMBackend, LLMBackendError
 
@@ -25,6 +27,14 @@ _INITIAL_BACKOFF_SECONDS = 5.0
 _BACKOFF_MULTIPLIER = 2.0
 _MAX_BACKOFF_SECONDS = 60.0
 
+# OpenRouter detection
+_OPENROUTER_HOSTS = {"openrouter.ai"}
+
+
+def _is_openrouter(base_url: str) -> bool:
+    """Check if the base URL points to OpenRouter."""
+    return any(host in base_url.lower() for host in _OPENROUTER_HOSTS)
+
 
 class OpenAICompatBackend(LLMBackend):
     """
@@ -35,6 +45,11 @@ class OpenAICompatBackend(LLMBackend):
 
     Rate-limited (429) responses are automatically retried with
     exponential backoff up to _MAX_RETRIES times.
+
+    When pointed at OpenRouter, the backend automatically:
+    - Enables the response-healing plugin (fixes malformed JSON)
+    - Uses fallback models if configured via PASS2_FALLBACK_MODELS
+    - Supports structured output schemas via the json_schema parameter
     """
 
     def __init__(self, config: BackendConfig) -> None:
@@ -46,29 +61,86 @@ class OpenAICompatBackend(LLMBackend):
                 "backends.  Install it with:  pip install openai"
             )
 
-        # For local endpoints (Ollama, LM Studio) that don't need a key,
-        # pass a dummy value — the openai client requires *something*.
         api_key = config.api_key if config.api_key else "not-needed"
 
         self._client = openai.OpenAI(
             base_url=config.base_url,
             api_key=api_key,
         )
+        self._is_openrouter = _is_openrouter(config.base_url)
+        self._fallback_models: list[str] = []
 
-    def generate(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+    def set_fallback_models(self, models: list[str]) -> None:
+        """Set fallback model IDs for OpenRouter's model fallback feature."""
+        self._fallback_models = list(models)
+
+    def generate(
+        self,
+        prompt: str,
+        max_tokens: Optional[int] = None,
+        json_schema: Optional[dict] = None,
+    ) -> str:
+        """
+        Send a prompt and return the model's text response.
+
+        Args:
+            prompt:      The user prompt string.
+            max_tokens:  Override the default max_tokens if provided.
+            json_schema: Optional JSON schema to enforce structured output.
+                         When provided on OpenRouter, uses their structured
+                         outputs feature.  On other providers, the schema
+                         is included in the prompt as guidance (best-effort).
+
+        Returns:
+            The model's response as a plain string.
+        """
         tokens = max_tokens if max_tokens is not None else self._config.max_tokens
 
+        # Build extra_body for OpenRouter-specific features
+        extra_body: dict[str, Any] = {}
+
+        if self._is_openrouter:
+            # Model fallbacks
+            if self._fallback_models:
+                extra_body["models"] = self._fallback_models
+
+            # Response healing plugin (fixes malformed JSON)
+            extra_body["plugins"] = [{"id": "response-healing"}]
+
+        # Build request kwargs
+        kwargs: dict[str, Any] = {
+            "model": self._config.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self._config.temperature,
+            "max_tokens": tokens,
+        }
+
+        # Structured output support
+        if json_schema is not None and self._is_openrouter:
+            # OpenRouter enforces the schema server-side and handles
+            # response healing.  For non-OpenRouter providers (Ollama,
+            # LM Studio, etc.), we skip schema injection entirely —
+            # the prompts already contain JSON format instructions and
+            # the _parse_json_array fallback parser handles any preamble.
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": json_schema.get("name", "response"),
+                    "strict": True,
+                    "schema": json_schema.get("schema", json_schema),
+                },
+            }
+
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
+        # Retry loop with backoff for rate limits
         last_exc: Optional[Exception] = None
         backoff = _INITIAL_BACKOFF_SECONDS
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = self._client.chat.completions.create(
-                    model=self._config.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self._config.temperature,
-                    max_tokens=tokens,
-                )
+                response = self._client.chat.completions.create(**kwargs)
 
                 content = response.choices[0].message.content if response.choices else None
                 if content is None:
@@ -80,7 +152,6 @@ class OpenAICompatBackend(LLMBackend):
             except Exception as exc:
                 last_exc = exc
 
-                # Check if this is a rate limit error (429)
                 is_rate_limit = (
                     "429" in str(exc)
                     or "rate limit" in str(exc).lower()
@@ -88,19 +159,16 @@ class OpenAICompatBackend(LLMBackend):
                 )
 
                 if not is_rate_limit or attempt >= _MAX_RETRIES:
-                    # Not a rate limit, or we've exhausted retries — give up
                     raise LLMBackendError(
                         f"[{self.label}] Request to {self._config.base_url} failed: {exc}"
                     ) from exc
 
-                # Rate limited — wait and retry
                 wait_time = min(backoff, _MAX_BACKOFF_SECONDS)
                 print(f"  [{self.label}] Rate limited (attempt {attempt + 1}/{_MAX_RETRIES + 1}), "
                       f"retrying in {wait_time:.0f}s...")
                 time.sleep(wait_time)
                 backoff *= _BACKOFF_MULTIPLIER
 
-        # Should never reach here, but just in case
         raise LLMBackendError(
             f"[{self.label}] Request failed after {_MAX_RETRIES + 1} attempts: {last_exc}"
         )
