@@ -1,33 +1,22 @@
+"""
+Fact extraction from text chunks using a pluggable LLM backend.
+
+Two-pass pipeline:
+  Pass 1: Extract raw factual statements (no concept naming)
+  Pass 2: Assign concept names from a seed list
+
+Legacy single-pass functions are kept for backward compatibility.
+"""
+
 from dataclasses import dataclass
 from typing import List, Optional, TYPE_CHECKING
 
 import json
-import os
 import uuid
-import openai
 
 if TYPE_CHECKING:
     from ingest.pdf_loader import Chunk
-
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-
-
-class OllamaClient:
-    def __init__(self) -> None:
-        self._client = openai.OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
-
-    def generate(self, model: str, prompt: str, max_tokens: int = 800):
-        return self._client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=max_tokens,
-        )
-
-
-ollama_client = OllamaClient()
+    from backend.base import LLMBackend
 
 
 @dataclass
@@ -40,7 +29,6 @@ class Fact:
 
 # ---------------------------------------------------------------------------
 # Seed concept list — canonical names the model should map facts to.
-# This dramatically reduces naming inconsistency from small models.
 # Extend this list per-domain or load from a JSON/YAML file.
 # ---------------------------------------------------------------------------
 SEED_CONCEPTS: List[str] = [
@@ -84,8 +72,10 @@ SEED_CONCEPTS: List[str] = [
     "Expense Recognition",
 ]
 
-_SEED_CONCEPT_BLOCK = "\n".join(f"  - {c}" for c in SEED_CONCEPTS)
 
+# ---------------------------------------------------------------------------
+# JSON parsing helpers
+# ---------------------------------------------------------------------------
 
 def _parse_json_array(raw_content: str):
     """Parse a JSON array from raw model output."""
@@ -122,13 +112,15 @@ def _parse_json_object(raw_content: str):
 # ===================================================================
 
 def extract_raw_statements_batched(
-    chunks: List["Chunk"], batch_size: int = 2
+    chunks: List["Chunk"],
+    backend: "LLMBackend",
+    batch_size: int = 2,
 ) -> List[dict]:
     """
     Pass 1 (batched): Extract raw factual statements from chunks.
-    
+
     The model only extracts facts — it does NOT assign concept names.
-    This is a much simpler task for an 8B model and produces
+    This is a much simpler task for small models and produces
     cleaner output.
     """
     if not chunks:
@@ -167,12 +159,7 @@ Text:
 {combined_text}"""
 
         try:
-            response = ollama_client.generate(
-                model=OLLAMA_MODEL,
-                prompt=prompt,
-                max_tokens=900,
-            )
-            raw_content = response.choices[0].message.content or ""
+            raw_content = backend.generate(prompt, max_tokens=900)
         except Exception:
             continue
 
@@ -205,17 +192,16 @@ Text:
 
 def assign_concepts_to_statements(
     statements: List[dict],
+    backend: "LLMBackend",
     seed_concepts: Optional[List[str]] = None,
     batch_size: int = 12,
 ) -> List[Fact]:
     """
     Pass 2: Given raw statements, assign each to a concept name.
-    
+
     Uses the seed concept list to anchor naming. The model can also
     propose NEW concept names if a statement doesn't fit any seed,
     but the seed list keeps most names consistent.
-    
-    Processes in batches to keep prompt size manageable.
     """
     if not statements:
         return []
@@ -251,12 +237,7 @@ Output ONLY a JSON array with one entry per statement:
 [{{"index": 1, "concept": "Concept Name"}}, {{"index": 2, "concept": "Concept Name"}}]"""
 
         try:
-            response = ollama_client.generate(
-                model=OLLAMA_MODEL,
-                prompt=prompt,
-                max_tokens=500,
-            )
-            raw_content = response.choices[0].message.content or ""
+            raw_content = backend.generate(prompt, max_tokens=500)
         except Exception:
             continue
 
@@ -264,7 +245,6 @@ Output ONLY a JSON array with one entry per statement:
         if not isinstance(parsed, list):
             continue
 
-        # Build index -> concept map
         concept_map: dict[int, str] = {}
         for item in parsed:
             if not isinstance(item, dict):
@@ -294,7 +274,11 @@ Output ONLY a JSON array with one entry per statement:
 # Legacy single-pass interfaces (kept for backward compatibility)
 # ===================================================================
 
-def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
+def extract_facts(
+    chunk_text: str,
+    chunk_id: str,
+    backend: "LLMBackend",
+) -> List[Fact]:
     """Legacy single-pass extraction. Prefer the two-pass pipeline."""
     prompt = f"""
     Extract atomic facts from the text.
@@ -317,12 +301,7 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
     """
 
     try:
-        response = ollama_client.generate(
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-            max_tokens=500,
-        )
-        raw_content = response.choices[0].message.content or ""
+        raw_content = backend.generate(prompt, max_tokens=500)
     except Exception:
         return []
 
@@ -349,7 +328,11 @@ def extract_facts(chunk_text: str, chunk_id: str) -> List[Fact]:
     return facts
 
 
-def extract_facts_batched(chunks: List["Chunk"], batch_size: int = 3) -> List[Fact]:
+def extract_facts_batched(
+    chunks: List["Chunk"],
+    backend: "LLMBackend",
+    batch_size: int = 3,
+) -> List[Fact]:
     """Legacy batched extraction. Prefer the two-pass pipeline."""
     if not chunks:
         return []
@@ -399,12 +382,7 @@ def extract_facts_batched(chunks: List["Chunk"], batch_size: int = 3) -> List[Fa
         """
 
         try:
-            response = ollama_client.generate(
-                model=OLLAMA_MODEL,
-                prompt=prompt,
-                max_tokens=900,
-            )
-            raw_content = response.choices[0].message.content or ""
+            raw_content = backend.generate(prompt, max_tokens=900)
         except Exception:
             continue
 

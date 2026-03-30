@@ -1,11 +1,21 @@
-from typing import Optional
+"""
+Concept name canonicalization.
+
+Uses an LLM to normalize variant concept names to canonical forms,
+with a persistent cache to avoid redundant calls.
+"""
+
+from typing import Optional, TYPE_CHECKING
 from pathlib import Path
-from extract.fact_extractor import ollama_client, OLLAMA_MODEL
 
 import json
 import re
 
+if TYPE_CHECKING:
+    from backend.base import LLMBackend
+
 CANONICAL_CACHE_PATH = Path(__file__).with_name("canonical_cache.json")
+
 
 def load_canonical_cache() -> dict[str, Optional[str]]:
     if not CANONICAL_CACHE_PATH.exists():
@@ -61,11 +71,9 @@ def normalize_concept_rules(concept: str) -> str:
     if not concept:
         return concept
 
-    # Normalize whitespace/punctuation spacing.
     normalized = re.sub(r"\s+", " ", concept).strip()
     normalized = re.sub(r"\s+([,.;:])", r"\1", normalized)
 
-    # Normalize specific known variants first.
     lower = normalized.lower()
     if re.search(r"\bfifo\b", lower) or re.search(r"\bfirst\s+in\s+first\s+out\b", lower):
         normalized = "First In First Out"
@@ -83,7 +91,6 @@ def normalize_concept_rules(concept: str) -> str:
     ):
         normalized = "Electronic Product Code"
 
-    # Remove redundant trailing suffixes when phrase is already specific.
     words = normalized.split()
     if len(words) >= 3 and words[-1].lower() in {"method", "system", "approach"}:
         stem = " ".join(words[:-1]).lower()
@@ -100,19 +107,30 @@ def normalize_concept_rules(concept: str) -> str:
     return _title_case_concept(normalized)
 
 
-def canonicalize_concepts(concepts: list[str]) -> dict[str, Optional[str]]:
+def canonicalize_concepts(
+    concepts: list[str],
+    backend: "LLMBackend",
+) -> dict[str, Optional[str]]:
+    """
+    Canonicalize concept names using an LLM, with caching.
+
+    Args:
+        concepts: List of concept names to canonicalize.
+        backend:  The LLM backend to use for canonicalization.
+
+    Returns:
+        Mapping from original name to canonical name (or None if invalid).
+    """
     if not concepts:
         return {}
 
-    # Step 0: Load cache and only request uncached concepts.
     cache = load_canonical_cache()
     missing = [concept for concept in concepts if concept not in cache]
 
     if not missing:
         return {name: cache.get(name) for name in concepts}
 
-    # Step 1: Send uncached concepts in one batched prompt.
-    prompt = (f"""
+    prompt = f"""
     Canonicalize concept names from academic material.
 
     Goals:
@@ -147,22 +165,17 @@ def canonicalize_concepts(concepts: list[str]) -> dict[str, Optional[str]]:
 
     Concepts:
     {chr(10).join("- " + c for c in missing)}
-    """)
+    """
 
     try:
-        response = ollama_client.generate(
-            model=OLLAMA_MODEL,
-            prompt=prompt,
-            max_tokens=600,
-        )
-        raw_content = response.choices[0].message.content or ""
+        raw_content = backend.generate(prompt, max_tokens=600)
     except Exception:
         for name in missing:
             cache[name] = None
         save_canonical_cache(cache)
         return {name: cache.get(name) for name in concepts}
 
-    # Step 2: Parse JSON safely.
+    # Parse JSON safely.
     try:
         parsed = json.loads(raw_content)
     except Exception:
@@ -187,7 +200,6 @@ def canonicalize_concepts(concepts: list[str]) -> dict[str, Optional[str]]:
         save_canonical_cache(cache)
         return {name: cache.get(name) for name in concepts}
 
-    # Step 3: Update cache with LLM results and save.
     for name in missing:
         value = parsed.get(name)
         cache[name] = value if isinstance(value, str) else None
@@ -197,11 +209,8 @@ def canonicalize_concepts(concepts: list[str]) -> dict[str, Optional[str]]:
 
 
 def needs_canonicalization(concept: str) -> bool:
-    # Rule 1: single-letter token (e.g., "S").
     if any(len(token) == 1 for token in re.findall(r"[A-Za-z]+", concept)):
         return True
-
-    # Rule 2: unusual spacing or punctuation artifacts.
     if concept != concept.strip():
         return True
     if re.search(r"\s{2,}", concept):
@@ -209,13 +218,11 @@ def needs_canonicalization(concept: str) -> bool:
     if re.search(r"[\-_/]{2,}|[()]{2,}|[,:;.]\s*[,:;.]", concept):
         return True
 
-    # Rule 3: repeated words (case-insensitive).
     words = re.findall(r"[A-Za-z]+", concept.lower())
     for i in range(1, len(words)):
         if words[i] == words[i - 1]:
             return True
 
-    # Rule 4: mixed casing inside a word (e.g., eCb, iNd).
     for token in re.findall(r"[A-Za-z]+", concept):
         if any(c.islower() for c in token) and any(c.isupper() for c in token):
             if not token.istitle():
