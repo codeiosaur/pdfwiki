@@ -12,6 +12,7 @@ Supports three modes controlled by environment variables:
     LLM_PROVIDER=anthropic
     LLM_MODEL=claude-haiku-4-5-20251001
     ANTHROPIC_API_KEY=sk-ant-...
+  For openai_compat, set OPENROUTER_API_KEY or OPENAI_API_KEY as needed.
 
   HYBRID (local extraction, API for concept assignment):
     PASS1_PROVIDER=openai_compat

@@ -19,9 +19,8 @@ from transform.canonicalize import canonicalize_concepts
 from transform.merge import merge_similar_concepts
 from transform.normalize import normalize_group_keys
 from transform.filter import filter_concepts
-from generate.pages import (
+from generate.renderers import (
     generate_pages,
-    generate_pages_enhanced,
     generate_pages_wiki,
     render_pages_document,
     render_pages_preview,
