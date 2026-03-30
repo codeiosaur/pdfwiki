@@ -1151,6 +1151,7 @@ def _inject_wikilinks(text: str, all_titles: set[str], current_title: str) -> st
     """
     Replace occurrences of other concept titles with [[wikilinks]] in body text.
     Only links each concept once (first occurrence).
+    Skips text already inside [[ ]] to prevent nested links.
     """
     if not all_titles:
         return text
@@ -1162,9 +1163,27 @@ def _inject_wikilinks(text: str, all_titles: set[str], current_title: str) -> st
     for title in sorted_titles:
         if title in linked:
             continue
-        pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
-        if pattern.search(text):
-            text = pattern.sub(f"[[{title}]]", text, count=1)
+
+        # Build a pattern that matches the title only when NOT inside [[ ]]
+        # Strategy: split on existing wikilinks, only substitute in non-link segments
+        parts = re.split(r'(\[\[[^\]]*\]\])', text)
+        replaced = False
+        new_parts = []
+        for part in parts:
+            if part.startswith("[[") and part.endswith("]]"):
+                # Already a wikilink — don't touch it
+                new_parts.append(part)
+            elif not replaced:
+                pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
+                if pattern.search(part):
+                    part = pattern.sub(f"[[{title}]]", part, count=1)
+                    replaced = True
+                new_parts.append(part)
+            else:
+                new_parts.append(part)
+
+        if replaced:
+            text = "".join(new_parts)
             linked.add(title)
 
     return text
@@ -1225,7 +1244,6 @@ def generate_pages_wiki(
     for concept, facts in grouped.items():
         display_title = normalize_page_title(concept)
         fact_contents = _unique_fact_contents(facts)
-        text_to_sources = _fact_sources(facts)
         concept_type = _classify_concept_type(concept, fact_contents)
 
         # --- Select definition ---
@@ -1288,87 +1306,70 @@ def generate_pages_wiki(
             intro = f"{intro} {extra}"
         intro = _inject_wikilinks(intro, all_display_titles, display_title)
 
-        # --- Citations ---
-        citation_index = 1
-        citation_map: dict[tuple[str, ...], int] = {}
+        # --- Collect unique source documents (not chunk UUIDs) ---
+        source_files: set[str] = set()
+        for fact in facts:
+            # The source field on chunks holds the filename
+            # For now, chunk IDs are UUIDs — we extract the source from the Fact
+            if hasattr(fact, 'source_chunk_id') and fact.source_chunk_id:
+                source_files.add(fact.source_chunk_id)
 
-        definition_rendered, definition_notes, citation_index = _citation_suffixes(
-            [definition], text_to_sources, citation_map, citation_index,
-        )
-        formula_rendered, formula_notes, citation_index = _citation_suffixes(
-            formulas, text_to_sources, citation_map, citation_index,
-        )
-        interp_rendered, interp_notes, citation_index = _citation_suffixes(
-            interpretations, text_to_sources, citation_map, citation_index,
-        )
-        caution_rendered, caution_notes, citation_index = _citation_suffixes(
-            cautions, text_to_sources, citation_map, citation_index,
-        )
-        detail_rendered, detail_notes, citation_index = _citation_suffixes(
-            details, text_to_sources, citation_map, citation_index,
-        )
-
-        combined_notes = (
-            definition_notes + formula_notes + interp_notes
-            + caution_notes + detail_notes
-        )
-
-        # --- Assemble page by concept type ---
+        # --- Assemble page by concept type (no footnote suffixes) ---
         lines: list[str] = [f"# {display_title}", "", intro, "", "---"]
 
         if concept_type == "ratio":
             lines.extend(["", "## Definition", ""])
-            lines.append(definition_rendered[0] if definition_rendered else definition)
+            lines.append(definition)
 
-            if formula_rendered:
+            if formulas:
                 lines.extend(["", "---", "", "## Formula", ""])
-                for item in formula_rendered:
+                for item in formulas:
                     lines.append(f"```\n{item}\n```")
                     lines.append("")
 
-            if interp_rendered:
+            if interpretations:
                 lines.extend(["", "---", "", "## What It Tells You", ""])
-                for item in interp_rendered:
+                for item in interpretations:
                     wi = _inject_wikilinks(item, all_display_titles, display_title)
                     lines.append(f"- {wi}")
                 lines.append("")
 
-            if detail_rendered:
+            if details:
                 lines.extend(["", "---", "", "## Key Points", ""])
-                for item in detail_rendered:
+                for item in details:
                     wi = _inject_wikilinks(item, all_display_titles, display_title)
                     lines.append(f"- {wi}")
                 lines.append("")
 
         elif concept_type in ("method", "system"):
             lines.extend(["", "## Definition", ""])
-            lines.append(definition_rendered[0] if definition_rendered else definition)
+            lines.append(definition)
 
-            if detail_rendered:
+            if details:
                 lines.extend(["", "---", "", "## How It Works", ""])
-                for item in detail_rendered:
+                for item in details:
                     wi = _inject_wikilinks(item, all_display_titles, display_title)
                     lines.append(f"- {wi}")
                 lines.append("")
 
-            if formula_rendered:
+            if formulas:
                 lines.extend(["", "---", "", "## Formula", ""])
-                for item in formula_rendered:
+                for item in formulas:
                     lines.append(f"```\n{item}\n```")
                     lines.append("")
 
-            if interp_rendered:
+            if interpretations:
                 lines.extend(["", "---", "", "## Key Points", ""])
-                for item in interp_rendered:
+                for item in interpretations:
                     wi = _inject_wikilinks(item, all_display_titles, display_title)
                     lines.append(f"- {wi}")
                 lines.append("")
 
         else:
             lines.extend(["", "## Definition", ""])
-            lines.append(definition_rendered[0] if definition_rendered else definition)
+            lines.append(definition)
 
-            combined_detail = detail_rendered + interp_rendered
+            combined_detail = details + interpretations
             if combined_detail:
                 lines.extend(["", "---", "", "## Key Points", ""])
                 for item in combined_detail:
@@ -1376,14 +1377,14 @@ def generate_pages_wiki(
                     lines.append(f"- {wi}")
                 lines.append("")
 
-        if caution_rendered:
+        if cautions:
             lines.extend(["", "---", "", "## Cautions", ""])
-            for item in caution_rendered:
+            for item in cautions:
                 wi = _inject_wikilinks(item, all_display_titles, display_title)
                 lines.append(f"- {wi}")
             lines.append("")
 
-        # Related Concepts (domain-aware)
+        # Related Concepts (chunk co-occurrence)
         lines.extend(["", "---", "", "## Related Concepts"])
         related = _build_related_concepts_by_chunks(concept, concept_chunks, concept_names)
         if related:
@@ -1393,12 +1394,32 @@ def generate_pages_wiki(
         else:
             lines.append("- None")
 
-        lines.extend(["", "---", "", "## Sources"])
-        if combined_notes:
-            lines.extend(combined_notes)
-        else:
-            lines.append("- None")
+        # Source attribution — show source filenames when available.
+        # Chunk UUIDs are internal pipeline IDs and not shown to the user.
+        # When page-number tracking is added to the chunker, this can show
+        # specific page references like "Chapter 10, p. 658".
+        unique_sources = sorted({
+            fact.source_chunk_id.split("::")[0]
+            for fact in facts
+            if fact.source_chunk_id
+        })
+        has_real_sources = any(
+            not _looks_like_uuid(s) for s in unique_sources
+        )
+        if has_real_sources:
+            lines.extend(["", "---", "", "## Sources"])
+            for src in unique_sources:
+                if not _looks_like_uuid(src):
+                    lines.append(f"- {src}")
 
         pages[display_title] = "\n".join(lines)
 
     return pages
+
+
+def _looks_like_uuid(s: str) -> bool:
+    """Check if a string looks like a UUID (hex with dashes)."""
+    return bool(re.match(
+        r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+        s.strip().lower()
+    ))

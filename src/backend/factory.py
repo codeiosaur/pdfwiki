@@ -103,7 +103,7 @@ def _build_config(
 def _create_backend_from_config(config: BackendConfig) -> LLMBackend:
     """Instantiate the correct backend class from a config."""
     if config.provider == "openai_compat":
-        from backend.openai_api import OpenAICompatBackend
+        from backend.openai_compat import OpenAICompatBackend
         return OpenAICompatBackend(config)
     elif config.provider == "anthropic":
         from backend.anthropic import AnthropicBackend

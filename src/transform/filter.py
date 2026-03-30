@@ -35,7 +35,7 @@ COUNTRIES_REGIONS = {
 COMMON_ING_NOUNS = {
     "string", "king", "ring", "thing", "wing", "spring",
     "morning", "evening", "meeting", "greeting", "warning",
-    "meaning", "feeling", "building", "training", "learning",
+    "meaning", "feeling", "building", "training", "learning", "testing",
     "boxing", "mining", "dining", "timing", "bearing", "hearing",
     "feeling", "being", "beginning", "ending"
 }
