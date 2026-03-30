@@ -1,5 +1,26 @@
 # PDF → Obsidian Wiki Generator (v2)
 
+## Installation
+
+Requires Python 3.12+.
+
+```bash
+git clone <repo>
+cd pdf-to-wiki
+pip install -r requirements.txt
+cp .env.example .env   # then edit .env with your provider settings
+```
+
+Run:
+
+```bash
+python3 src/main.py
+```
+
+See `.env.example` for all configuration options and ARCHITECTURE.md for a full pipeline overview.
+
+---
+
 ## Overview
 
 This project converts academic PDFs (slides, textbooks, notes) into structured Obsidian markdown notes.
