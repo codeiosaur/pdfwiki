@@ -1,0 +1,9 @@
+# Core
+pypdf>=5.0
+
+# LLM backends — install the one(s) you use
+openai>=1.0        # Ollama, OpenRouter, LM Studio, vLLM, Together AI, etc.
+anthropic>=0.40    # Anthropic Claude API
+
+# Dev / testing
+pytest>=8.0
