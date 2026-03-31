@@ -34,8 +34,8 @@ class Chunk:
 
 def load_pdf_chunks(
     pdf_path: str,
-    min_chunk_words: int = 500,
-    max_chunk_words: int = 700,
+    min_chunk_words: int = 800,
+    max_chunk_words: int = 1200,
 ) -> List[Chunk]:
     if min_chunk_words < 1:
         min_chunk_words = 1
@@ -51,7 +51,7 @@ def load_pdf_chunks(
     full_text = "\n".join(page_texts)
     full_text = full_text.translate(_UNICODE_REPLACEMENTS)
 
-    # Step 2: Split on sentence boundaries, then pack into roughly 500-700 word chunks.
+    # Step 2: Split on sentence boundaries, then pack into roughly 800-1200 word chunks.
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", full_text) if s.strip()]
     chunks: List[Chunk] = []
     source_name = Path(pdf_path).name
