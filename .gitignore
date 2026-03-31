@@ -8,7 +8,7 @@ secrets.json
 config.local.py
 # Safe template
 !.env.example
- 
+
 # Python
 .venv/
 __pycache__/
@@ -18,10 +18,16 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .vscode
- 
+.continue
+
 # Output files
 output*/
 vault/
 data/
 tmp/
 *.pdf
+*.json
+.DS_STORE
+.aider*
+# Manual seed concepts used for testing and UX - safe to include
+!seeds/*.json

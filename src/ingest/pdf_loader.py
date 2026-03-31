@@ -1,0 +1,126 @@
+# src/ingest/pdf_loader.py
+from dataclasses import dataclass
+from typing import List
+from pathlib import Path
+from pypdf import PdfReader
+import re
+import uuid
+
+# Typographic Unicode → ASCII replacements common in academic PDFs.
+# Keeps structure intact (bullets, dashes) while avoiding codec errors in
+# HTTP clients that default to ASCII encoding.
+_UNICODE_REPLACEMENTS = str.maketrans({
+    "\u2014": "--",   # em dash
+    "\u2013": "-",    # en dash
+    "\u2012": "-",    # figure dash
+    "\u2015": "--",   # horizontal bar
+    "\u2018": "'",    # left single quotation mark
+    "\u2019": "'",    # right single quotation mark
+    "\u201c": '"',    # left double quotation mark
+    "\u201d": '"',    # right double quotation mark
+    "\u2026": "...",  # horizontal ellipsis
+    "\u00a0": " ",    # non-breaking space
+    "\u00ad": "",     # soft hyphen (invisible, safe to drop)
+    "\u2022": "*",    # bullet
+})
+
+
+@dataclass
+class Chunk:
+    id: str
+    text: str
+    source: str
+    chapter: str | None
+
+def load_pdf_chunks(
+    pdf_path: str,
+    min_chunk_words: int = 800,
+    max_chunk_words: int = 1200,
+) -> List[Chunk]:
+    if min_chunk_words < 1:
+        min_chunk_words = 1
+    if max_chunk_words < min_chunk_words:
+        max_chunk_words = min_chunk_words
+
+    # Step 1: Load PDF and collect text from all pages.
+    reader = PdfReader(pdf_path)
+    page_texts: List[str] = []
+    for page in reader.pages:
+        page_texts.append(page.extract_text() or "")
+
+    full_text = "\n".join(page_texts)
+    full_text = full_text.translate(_UNICODE_REPLACEMENTS)
+
+    # Step 2: Split on sentence boundaries, then pack into roughly 800-1200 word chunks.
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", full_text) if s.strip()]
+    chunks: List[Chunk] = []
+    source_name = Path(pdf_path).name
+
+    current_sentences: List[str] = []
+    current_word_count = 0
+
+    def flush_current() -> None:
+        nonlocal current_sentences, current_word_count
+        if not current_sentences:
+            return
+        chunks.append(
+            Chunk(
+                id=str(uuid.uuid4()),
+                text=" ".join(current_sentences),
+                source=source_name,
+                chapter=None,
+            )
+        )
+        current_sentences = []
+        current_word_count = 0
+
+    for sentence in sentences:
+        sentence_words = sentence.split()
+        sentence_word_count = len(sentence_words)
+        if sentence_word_count == 0:
+            continue
+
+        # Fallback: if a single sentence is too large, split it by words.
+        if sentence_word_count > max_chunk_words:
+            flush_current()
+            for i in range(0, sentence_word_count, max_chunk_words):
+                part_words = sentence_words[i : i + max_chunk_words]
+                chunks.append(
+                    Chunk(
+                        id=str(uuid.uuid4()),
+                        text=" ".join(part_words),
+                        source=source_name,
+                        chapter=None,
+                    )
+                )
+            continue
+
+        # Start a new chunk when current one is already in-range and next sentence would overflow.
+        if (
+            current_sentences
+            and current_word_count >= min_chunk_words
+            and current_word_count + sentence_word_count > max_chunk_words
+        ):
+            flush_current()
+
+        current_sentences.append(sentence)
+        current_word_count += sentence_word_count
+
+    # Emit any remaining text as the final chunk.
+    flush_current()
+
+    # If sentence splitting produced no chunks (e.g., unusual formatting), fall back to word slicing.
+    if not chunks:
+        words = full_text.split()
+        for i in range(0, len(words), max_chunk_words):
+            chunk_words = words[i : i + max_chunk_words]
+            chunks.append(
+                Chunk(
+                    id=str(uuid.uuid4()),
+                    text=" ".join(chunk_words),
+                    source=source_name,
+                    chapter=None,
+                )
+            )
+
+    return chunks
