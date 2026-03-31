@@ -9,6 +9,9 @@ from extract.fact_extractor import (
     extract_facts_batched,
     extract_raw_statements_batched,
     assign_concepts_to_statements,
+    derive_seed_concepts,
+    load_seeds_from_file,
+    load_builtin_seeds,
     Fact,
     _parse_json_object,
 )
@@ -42,6 +45,40 @@ def generate_chunk_batches(chunks: List[Chunk], batch_size: int = 2) -> Iterator
 # Two-pass pipeline
 # ===================================================================
 
+def resolve_seed_concepts(
+    statements: List[dict],
+    pass2_backend: LLMBackend,
+    seeds_file: Optional[str] = None,
+) -> List[str]:
+    """
+    Resolve the seed concept list for Pass 2, in priority order:
+      1. User-supplied JSON file (--seeds / seeds_file)
+      2. Auto-generated from statements via Pass 1.5
+      3. Hardcoded SEED_CONCEPTS fallback
+
+    Returns the seed list to use.
+    """
+    if seeds_file:
+        try:
+            seeds = load_seeds_from_file(seeds_file)
+            print(f"Pass 1.5: Loaded {len(seeds)} seed concepts from {seeds_file}")
+            return seeds
+        except Exception as exc:
+            print(f"Pass 1.5: Failed to load seeds file ({exc}), falling back to auto-generation")
+
+    print(f"Pass 1.5: Deriving seed concepts from statements "
+          f"[{pass2_backend.label}:{pass2_backend.model}]...")
+    seeds = derive_seed_concepts(statements, pass2_backend)
+    if seeds:
+        print(f"Pass 1.5 complete: {len(seeds)} seed concepts derived")
+        return seeds
+
+    builtin = load_builtin_seeds()
+    print(f"Pass 1.5: Auto-generation failed, using built-in seed list "
+          f"({len(builtin)} concepts)")
+    return builtin
+
+
 def run_pipeline_two_pass(
     pdf_path: str,
     pass1_backend: LLMBackend,
@@ -49,11 +86,13 @@ def run_pipeline_two_pass(
     batch_size: int = 2,
     max_workers: int = 5,
     max_chunks: Optional[int] = None,
+    seeds_file: Optional[str] = None,
 ) -> List[Fact]:
     """
     Two-pass extraction pipeline:
-      Pass 1: Extract raw factual statements (no concept naming)
-      Pass 2: Assign concept names from seed list
+      Pass 1:   Extract raw factual statements (no concept naming)
+      Pass 1.5: Derive seed concept names from statements (or load from file)
+      Pass 2:   Assign concept names using the seed list
 
     Each pass can use a different LLM backend (hybrid mode).
     """
@@ -80,9 +119,11 @@ def run_pipeline_two_pass(
 
     print(f"Pass 1 complete: {len(all_statements)} raw statements extracted")
 
+    seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=seeds_file)
+
     print(f"Pass 2: Assigning concept names to {len(all_statements)} statements "
           f"[{pass2_backend.label}:{pass2_backend.model}]...")
-    all_facts = assign_concepts_to_statements(all_statements, pass2_backend)
+    all_facts = assign_concepts_to_statements(all_statements, pass2_backend, seed_concepts=seeds)
     print(f"Pass 2 complete: {len(all_facts)} facts with concept names")
 
     return all_facts
@@ -360,7 +401,11 @@ def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None
 
 
 if __name__ == "__main__":
-    demo_pdf_path = "./sample_accounting_openstax.pdf"
+    from cli import build_parser, apply_args_to_env
+    args = build_parser().parse_args()
+    apply_args_to_env(args)
+
+    demo_pdf_path = args.input or "./sample_accounting_openstax.pdf"
     batch_size = int(os.getenv("PIPELINE_BATCH_SIZE", "2"))
     max_workers = int(os.getenv("PIPELINE_MAX_WORKERS", "5"))
     max_chunks_env = os.getenv("PIPELINE_MAX_CHUNKS", "").strip()
@@ -389,6 +434,7 @@ if __name__ == "__main__":
             batch_size=batch_size,
             max_workers=max_workers,
             max_chunks=max_chunks,
+            seeds_file=args.seeds,
         )
     else:
         print("\n=== USING LEGACY SINGLE-PASS PIPELINE ===")

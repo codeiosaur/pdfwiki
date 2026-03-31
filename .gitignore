@@ -27,5 +27,6 @@ data/
 tmp/
 *.pdf
 *.json
+!seeds/*.json
 .DS_STORE
 .aider*

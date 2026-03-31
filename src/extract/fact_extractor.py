@@ -9,6 +9,7 @@ Legacy single-pass functions are kept for backward compatibility.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 
 import json
@@ -28,49 +29,93 @@ class Fact:
 
 
 # ---------------------------------------------------------------------------
-# Seed concept list — canonical names the model should map facts to.
-# Extend this list per-domain or load from a JSON/YAML file.
+# Built-in seed fallback — used only when auto-generation fails and no
+# --seeds file is provided.  Domain-specific data lives in seeds/*.json,
+# not in Python source.
 # ---------------------------------------------------------------------------
-SEED_CONCEPTS: List[str] = [
-    # Inventory methods & systems
-    "First In First Out",
-    "Last In First Out",
-    "Weighted Average Cost",
-    "Specific Identification",
-    "Perpetual Inventory System",
-    "Periodic Inventory System",
-    "Cost of Goods Sold",
-    "Cost Allocation",
-    # Inventory measurement & reporting
-    "Lower of Cost or Market",
-    "Inventory Turnover Ratio",
-    "Days Sales in Inventory",
-    "Gross Profit",
-    "Gross Margin",
-    "Gross Profit Method",
-    "Retail Inventory Method",
-    "Beginning Inventory",
-    "Ending Inventory",
-    "Goods Available for Sale",
-    # Inventory issues
-    "Inventory Fraud",
-    "Inventory Errors",
-    "Inventory Shrinkage",
-    "Inventory Obsolescence",
-    "Consignment",
-    # Shipping & ownership
-    "FOB Shipping Point",
-    "FOB Destination",
-    # Technology
-    "UPC Barcode",
-    "Electronic Product Code",
-    # Financial statements & ratios (cross-chapter)
-    "Income Statement",
-    "Balance Sheet",
-    "Net Income",
-    "Revenue Recognition",
-    "Expense Recognition",
-]
+_BUILTIN_SEEDS_FILE = Path(__file__).parent.parent / "seeds" / "accounting.json"
+
+
+def load_builtin_seeds() -> List[str]:
+    """Load the built-in accounting seed list from seeds/accounting.json."""
+    try:
+        return load_seeds_from_file(str(_BUILTIN_SEEDS_FILE))
+    except Exception as exc:
+        print(f"  [seeds] Warning: could not load built-in seeds ({exc}); no fallback available")
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Seed concept utilities
+# ---------------------------------------------------------------------------
+
+def load_seeds_from_file(path: str) -> List[str]:
+    """Load a seed concept list from a JSON file (array of strings)."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"Seeds file must be a JSON array, got {type(data).__name__}")
+    seeds = [s.strip() for s in data if isinstance(s, str) and s.strip()]
+    if not seeds:
+        raise ValueError("Seeds file contained no valid strings")
+    return seeds
+
+
+def derive_seed_concepts(
+    statements: List[dict],
+    backend: "LLMBackend",
+    target_count: int = 25,
+    sample_size: int = 60,
+) -> List[str]:
+    """
+    Pass 1.5: Derive seed concept names from extracted statements.
+
+    Asks the LLM to identify the key concepts covered by the statements,
+    producing a domain-specific seed list for Pass 2 concept assignment.
+    Returns an empty list on failure so the caller can fall back to SEED_CONCEPTS.
+    """
+    if not statements:
+        return []
+
+    sample = statements[:sample_size]
+    statement_block = "\n".join(
+        f"  {i + 1}. {s['statement']}" for i, s in enumerate(sample)
+    )
+
+    prompt = f"""The following statements were extracted from a document.
+Identify the {target_count} most important distinct concept names a reader would need to know.
+
+Rules:
+- Short noun phrases only (1-4 words)
+- Use standard domain terminology
+- Each name must be meaningfully distinct
+- Do NOT use vague names like "Overview", "Impact", "Effects", "Goals", "Management"
+- Do NOT repeat the same concept under different phrasings
+
+Statements:
+{statement_block}
+
+Output ONLY a JSON array of concept name strings:
+["Concept Name", "Another Concept", ...]"""
+
+    schema = {
+        "name": "seed_concepts",
+        "schema": {"type": "array", "items": {"type": "string"}},
+    }
+
+    try:
+        raw = backend.generate(prompt, json_schema=schema)
+    except Exception as exc:
+        print(f"  [pass1.5] Failed to derive seeds: {exc}")
+        return []
+
+    parsed = _parse_json_array(raw)
+    if not isinstance(parsed, list):
+        print(f"  [pass1.5] Could not parse seed list from response")
+        return []
+
+    seeds = [s.strip() for s in parsed if isinstance(s, str) and s.strip()]
+    return seeds
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +280,7 @@ def assign_concepts_to_statements(
     if not statements:
         return []
 
-    seeds = seed_concepts if seed_concepts is not None else SEED_CONCEPTS
+    seeds = seed_concepts if seed_concepts is not None else load_builtin_seeds()
     seed_block = "\n".join(f"  - {c}" for c in seeds)
 
     all_facts: List[Fact] = []
