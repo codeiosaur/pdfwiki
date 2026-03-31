@@ -187,6 +187,19 @@ class TestEnvLoading:
 # ===================================================================
 
 class TestFactory:
+    @pytest.fixture(autouse=True)
+    def no_dotenv(self, monkeypatch):
+        """Isolate factory tests from the developer's real .env file.
+
+        Two things need to happen:
+        1. Patch _load_dotenv to a no-op so it can't reload keys that monkeypatch.delenv removed.
+        2. Clear any API key vars already in os.environ (loaded at process start from .env).
+        Tests that need a specific key set it explicitly via monkeypatch.setenv.
+        """
+        monkeypatch.setattr("backend.config._load_dotenv", lambda: None)
+        for var in ["LLM_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"]:
+            monkeypatch.delenv(var, raising=False)
+
     def test_default_config_is_local_ollama(self, monkeypatch):
         """With no env vars set, factory should default to local Ollama."""
         # Clear any existing vars
