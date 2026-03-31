@@ -138,7 +138,7 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
         related = related_map.get(concept, [])
         if related:
             for item in related:
-                lines.append(f"- {normalize_page_title(item)}")
+                lines.append(f"- [[{normalize_page_title(item)}]]")
         else:
             lines.append("- None")
 
