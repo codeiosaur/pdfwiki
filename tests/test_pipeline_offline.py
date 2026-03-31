@@ -157,6 +157,29 @@ def test_multi_pdf_processing_offline(monkeypatch, tmp_path):
     main.process_pdf("week1.pdf", str(vault_dir), subject_override="Cryptography", batch_mode=True)
     main.process_pdf("week2.pdf", str(vault_dir), subject_override="Access Control", batch_mode=True)
 
+    # Batch finalization: generate MOC once per subject (mirrors run_cli batch logic)
+    vault_state = main.load_vault_state(str(vault_dir))
+    output_deps = main.StudyOutputDeps(
+        load_vault_state=main.load_vault_state,
+        load_prompt=main.load_prompt,
+        query=main.query,
+        parse_wiki_page=main.parse_wiki_page,
+        add_frontmatter=main.add_frontmatter,
+        write_flashcards=main.write_flashcards,
+        write_cheatsheet=main.write_cheatsheet,
+    )
+    for subject in sorted(vault_state.get("subjects", [])):
+        subject_concepts = sorted(vault_state.get("pages", {}).get(subject, {}).keys())
+        if subject_concepts:
+            main.maybe_regenerate_moc(
+                added_new=True,
+                output_dir=str(vault_dir),
+                subject=subject,
+                concepts=subject_concepts,
+                index_text="",
+                deps=output_deps,
+            )
+
     assert (vault_dir / "Cryptography" / "Symmetric Encryption.md").exists()
     assert (vault_dir / "Access Control" / "Role-Based Access Control.md").exists()
     assert (vault_dir / "Access Control" / "Access Control - MOC.md").exists()
