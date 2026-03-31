@@ -7,7 +7,7 @@ PDF-to-Wiki is a pipeline that converts PDF documents (textbooks, notes, slides)
 ## Pipeline Flow
 
 ```
-PDF → Chunks → [Pass 1: Extract Statements] → [Pass 2: Assign Concepts] → Facts
+PDF → Chunks → [Pass 1: Extract Statements] → [Pass 1.5: Derive Seeds] → [Pass 2: Assign Concepts] → Facts
   → Filter → Group → Normalize → Canonicalize → Merge → Cluster → Consolidate
   → [Render Pages] → Markdown Wiki Pages
 ```
@@ -36,7 +36,9 @@ The pipeline splits LLM work into two simpler tasks:
 
 **Pass 1 (Extract):** Ask the LLM to pull factual statements from text. No concept naming. This is easy for small models (8B) — just sentence extraction.
 
-**Pass 2 (Assign):** Given the extracted statements, assign each to a concept name from a seed list. Can use a different (better) model than Pass 1. This is where hybrid mode shines — local extraction + API assignment.
+**Pass 1.5 (Derive Seeds):** After extraction, ask the Pass 2 backend to derive 20-30 domain-specific concept names from a sample of the extracted statements. This makes the pipeline domain-agnostic — no hardcoded terminology needed. Priority order: `--seeds FILE` > auto-derived > built-in fallback (`seeds/accounting.json`).
+
+**Pass 2 (Assign):** Given the extracted statements, assign each to a concept name from the seed list. Can use a different (better) model than Pass 1. This is where hybrid mode shines — local extraction + API assignment.
 
 **Why two passes:** Small models (llama3.1:8b) struggle when asked to simultaneously extract facts, name concepts, track chunk IDs, and output JSON. Splitting the task dramatically improves consistency.
 
@@ -104,5 +106,5 @@ All config via environment variables (or `.env` file). See `.env.example` for fu
 ## Known Limitations
 
 - **Source tracking:** Chunks use UUIDs, not page numbers. The Sources section on wiki pages is hidden until real source references are added to the chunker.
-- **Seed concepts:** The seed list in `fact_extractor.py` is currently accounting-specific. For other domains, the list should be updated or loaded from a config file.
+- **Seed concepts:** Pass 1.5 auto-derives domain-specific seeds from the extracted statements, making explicit seed files optional. Supply `--seeds FILE` (a JSON array of concept name strings) to skip auto-generation. Built-in fallback lives in `seeds/accounting.json`.
 - **Local model quality:** 8B models produce adequate but imperfect extractions. The hybrid approach (local Pass 1 + API Pass 2) significantly improves quality.
