@@ -27,6 +27,7 @@ and concept assignment via API.
 """
 
 from typing import Optional
+from urllib.parse import urlparse
 
 from backend.base import BackendConfig, LLMBackend, LLMBackendError
 from backend.config import get_env, get_env_secret, log_backend_config
@@ -37,8 +38,18 @@ from backend.config import get_env, get_env_secret, log_backend_config
 _DEFAULT_PROVIDER = "openai_compat"
 _DEFAULT_BASE_URL = "http://localhost:11434/v1"
 _DEFAULT_MODEL = "llama3.1:8b"
-_DEFAULT_MAX_TOKENS = 800
 _DEFAULT_TEMPERATURE = 0.0
+
+# Local endpoints are memory-constrained; cloud endpoints have no such limit.
+_LOCAL_MAX_TOKENS = 900
+_CLOUD_MAX_TOKENS = 2048
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _default_max_tokens(base_url: str) -> int:
+    """Return 900 for local endpoints (localhost/127.0.0.1), 2048 for cloud."""
+    host = urlparse(base_url).hostname or ""
+    return _LOCAL_MAX_TOKENS if host in _LOCAL_HOSTS else _CLOUD_MAX_TOKENS
 
 
 # ── Provider registry ─────────────────────────────────────────────────
@@ -78,12 +89,14 @@ def _build_config(
     model: str,
     label: str,
     api_key: Optional[str] = None,
-    max_tokens: int = _DEFAULT_MAX_TOKENS,
+    max_tokens: Optional[int] = None,
     temperature: float = _DEFAULT_TEMPERATURE,
 ) -> BackendConfig:
     """Build a BackendConfig, resolving the API key if not provided."""
     if api_key is None:
         api_key = _resolve_api_key(provider)
+    if max_tokens is None:
+        max_tokens = _default_max_tokens(base_url)
 
     # Set default base_url for Anthropic if not explicitly provided
     if provider == "anthropic" and base_url == _DEFAULT_BASE_URL:
@@ -127,8 +140,10 @@ def create_backend(label: str = "default") -> LLMBackend:
     provider = get_env("LLM_PROVIDER", _DEFAULT_PROVIDER)
     base_url = get_env("LLM_BASE_URL", _DEFAULT_BASE_URL)
     model = get_env("LLM_MODEL", _DEFAULT_MODEL)
+    max_tokens_raw = get_env("LLM_MAX_TOKENS", "")
+    max_tokens = int(max_tokens_raw) if max_tokens_raw.isdigit() else None
 
-    config = _build_config(provider, base_url, model, label=label)
+    config = _build_config(provider, base_url, model, label=label, max_tokens=max_tokens)
     log_backend_config(label, provider, base_url, model, config.api_key)
 
     return _create_backend_from_config(config)
@@ -149,12 +164,17 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
     global_base_url = get_env("LLM_BASE_URL", _DEFAULT_BASE_URL)
     global_model = get_env("LLM_MODEL", _DEFAULT_MODEL)
 
+    global_max_tokens_raw = get_env("LLM_MAX_TOKENS", "")
+    global_max_tokens = int(global_max_tokens_raw) if global_max_tokens_raw.isdigit() else None
+
     # Pass 1: extraction (defaults to global/local)
     p1_provider = get_env("PASS1_PROVIDER", global_provider)
     p1_base_url = get_env("PASS1_BASE_URL", global_base_url)
     p1_model = get_env("PASS1_MODEL", global_model)
+    p1_max_tokens_raw = get_env("PASS1_MAX_TOKENS", "")
+    p1_max_tokens = int(p1_max_tokens_raw) if p1_max_tokens_raw.isdigit() else global_max_tokens
 
-    p1_config = _build_config(p1_provider, p1_base_url, p1_model, label="pass1-extract")
+    p1_config = _build_config(p1_provider, p1_base_url, p1_model, label="pass1-extract", max_tokens=p1_max_tokens)
     log_backend_config("pass1-extract", p1_provider, p1_base_url, p1_model, p1_config.api_key)
     pass1 = _create_backend_from_config(p1_config)
 
@@ -162,8 +182,10 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
     p2_provider = get_env("PASS2_PROVIDER", global_provider)
     p2_base_url = get_env("PASS2_BASE_URL", global_base_url)
     p2_model = get_env("PASS2_MODEL", global_model)
+    p2_max_tokens_raw = get_env("PASS2_MAX_TOKENS", "")
+    p2_max_tokens = int(p2_max_tokens_raw) if p2_max_tokens_raw.isdigit() else global_max_tokens
 
-    p2_config = _build_config(p2_provider, p2_base_url, p2_model, label="pass2-assign")
+    p2_config = _build_config(p2_provider, p2_base_url, p2_model, label="pass2-assign", max_tokens=p2_max_tokens)
     log_backend_config("pass2-assign", p2_provider, p2_base_url, p2_model, p2_config.api_key)
     pass2 = _create_backend_from_config(p2_config)
 

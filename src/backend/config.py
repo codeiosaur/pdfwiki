@@ -43,6 +43,12 @@ def _load_dotenv() -> None:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip().strip("'\"")
+            # Strip inline comments from unquoted values (e.g. KEY=val  # comment)
+            if not (value.startswith("'") or value.startswith('"')):
+                for i, ch in enumerate(value):
+                    if ch == "#" and (i == 0 or value[i - 1] in (" ", "\t")):
+                        value = value[:i].strip()
+                        break
             # Don't override existing env vars
             if key and key not in os.environ:
                 os.environ[key] = value

@@ -4,8 +4,25 @@ from typing import List
 from pathlib import Path
 from pypdf import PdfReader
 import re
-
 import uuid
+
+# Typographic Unicode → ASCII replacements common in academic PDFs.
+# Keeps structure intact (bullets, dashes) while avoiding codec errors in
+# HTTP clients that default to ASCII encoding.
+_UNICODE_REPLACEMENTS = str.maketrans({
+    "\u2014": "--",   # em dash
+    "\u2013": "-",    # en dash
+    "\u2012": "-",    # figure dash
+    "\u2015": "--",   # horizontal bar
+    "\u2018": "'",    # left single quotation mark
+    "\u2019": "'",    # right single quotation mark
+    "\u201c": '"',    # left double quotation mark
+    "\u201d": '"',    # right double quotation mark
+    "\u2026": "...",  # horizontal ellipsis
+    "\u00a0": " ",    # non-breaking space
+    "\u00ad": "",     # soft hyphen (invisible, safe to drop)
+    "\u2022": "*",    # bullet
+})
 
 
 @dataclass
@@ -32,6 +49,7 @@ def load_pdf_chunks(
         page_texts.append(page.extract_text() or "")
 
     full_text = "\n".join(page_texts)
+    full_text = full_text.translate(_UNICODE_REPLACEMENTS)
 
     # Step 2: Split on sentence boundaries, then pack into roughly 500-700 word chunks.
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", full_text) if s.strip()]

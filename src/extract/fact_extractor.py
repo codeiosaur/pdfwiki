@@ -183,7 +183,7 @@ Text:
 
         try:
             raw_content = backend.generate(
-                prompt, max_tokens=900, json_schema=statement_extraction_schema,
+                prompt, json_schema=statement_extraction_schema,
             )
         except Exception as exc:
             print(f"  [pass1] Batch {i//batch_size + 1}: LLM call failed: {exc}")
@@ -290,7 +290,7 @@ Output ONLY a JSON array with one entry per statement:
 
         try:
             raw_content = backend.generate(
-                prompt, max_tokens=500, json_schema=concept_assignment_schema,
+                prompt, json_schema=concept_assignment_schema,
             )
         except Exception as exc:
             print(f"  [pass2] Batch {i//batch_size + 1}: LLM call failed: {exc}")
@@ -367,7 +367,7 @@ def extract_facts(
     """
 
     try:
-        raw_content = backend.generate(prompt, max_tokens=500)
+        raw_content = backend.generate(prompt)
     except Exception:
         return []
 
@@ -448,7 +448,7 @@ def extract_facts_batched(
         """
 
         try:
-            raw_content = backend.generate(prompt, max_tokens=900)
+            raw_content = backend.generate(prompt)
         except Exception:
             continue
 
