@@ -36,6 +36,7 @@ from generate.related import (
     fact_sources,
     citation_suffixes,
     looks_like_uuid,
+    all_sources_are_uuids,
 )
 from generate.wiki_helpers import (
     classify_concept_type,
@@ -107,15 +108,21 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
 
         lead = build_lead(definition, key_points)
 
-        citation_index = 1
-        citation_map: dict[tuple[str, ...], int] = {}
-        definition_rendered, definition_notes, citation_index = citation_suffixes(
-            [definition], text_to_sources, citation_map, citation_index,
-        )
-        key_point_rendered, key_point_notes, citation_index = citation_suffixes(
-            key_points, text_to_sources, citation_map, citation_index,
-        )
-        combined_notes = definition_notes + key_point_notes
+        hide_sources = all_sources_are_uuids(text_to_sources)
+
+        if hide_sources:
+            definition_rendered = [definition]
+            key_point_rendered = key_points
+        else:
+            citation_index = 1
+            citation_map: dict[tuple[str, ...], int] = {}
+            definition_rendered, definition_notes, citation_index = citation_suffixes(
+                [definition], text_to_sources, citation_map, citation_index,
+            )
+            key_point_rendered, key_point_notes, citation_index = citation_suffixes(
+                key_points, text_to_sources, citation_map, citation_index,
+            )
+            combined_notes = definition_notes + key_point_notes
 
         if definition == "No definition available." and not key_points and not include_empty_pages:
             continue
@@ -142,11 +149,12 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
         else:
             lines.append("- None")
 
-        lines.extend(["", "## Sources"])
-        if combined_notes:
-            lines.extend(combined_notes)
-        else:
-            lines.append("- None")
+        if not hide_sources:
+            lines.extend(["", "## Sources"])
+            if combined_notes:
+                lines.extend(combined_notes)
+            else:
+                lines.append("- None")
 
         pages[display_title] = "\n".join(lines)
 
@@ -229,26 +237,37 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
 
         intro = build_enhanced_intro(display_title, definition, interpretations, key_points)
 
-        citation_index = 1
-        citation_map: dict[tuple[str, ...], int] = {}
+        hide_sources = all_sources_are_uuids(text_to_sources)
 
-        definition_rendered, definition_notes, citation_index = citation_suffixes(
-            [definition], text_to_sources, citation_map, citation_index)
-        formula_rendered, formula_notes, citation_index = citation_suffixes(
-            formulas, text_to_sources, citation_map, citation_index)
-        interpretation_rendered, interpretation_notes, citation_index = citation_suffixes(
-            interpretations, text_to_sources, citation_map, citation_index)
-        example_rendered, example_notes, citation_index = citation_suffixes(
-            examples, text_to_sources, citation_map, citation_index)
-        caution_rendered, caution_notes, citation_index = citation_suffixes(
-            cautions, text_to_sources, citation_map, citation_index)
-        key_point_rendered, key_point_notes, citation_index = citation_suffixes(
-            key_points, text_to_sources, citation_map, citation_index)
+        if hide_sources:
+            definition_rendered = [definition]
+            formula_rendered = formulas
+            interpretation_rendered = interpretations
+            example_rendered = examples
+            caution_rendered = cautions
+            key_point_rendered = key_points
+            combined_notes: list[str] = []
+        else:
+            citation_index = 1
+            citation_map: dict[tuple[str, ...], int] = {}
 
-        combined_notes = (
-            definition_notes + formula_notes + interpretation_notes
-            + example_notes + caution_notes + key_point_notes
-        )
+            definition_rendered, definition_notes, citation_index = citation_suffixes(
+                [definition], text_to_sources, citation_map, citation_index)
+            formula_rendered, formula_notes, citation_index = citation_suffixes(
+                formulas, text_to_sources, citation_map, citation_index)
+            interpretation_rendered, interpretation_notes, citation_index = citation_suffixes(
+                interpretations, text_to_sources, citation_map, citation_index)
+            example_rendered, example_notes, citation_index = citation_suffixes(
+                examples, text_to_sources, citation_map, citation_index)
+            caution_rendered, caution_notes, citation_index = citation_suffixes(
+                cautions, text_to_sources, citation_map, citation_index)
+            key_point_rendered, key_point_notes, citation_index = citation_suffixes(
+                key_points, text_to_sources, citation_map, citation_index)
+
+            combined_notes = (
+                definition_notes + formula_notes + interpretation_notes
+                + example_notes + caution_notes + key_point_notes
+            )
 
         lines: list[str] = [
             f"# {display_title}", "", intro, "", "---", "",
@@ -293,11 +312,12 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
         else:
             lines.append("- None")
 
-        lines.extend(["", "---", "", "## Sources"])
-        if combined_notes:
-            lines.extend(combined_notes)
-        else:
-            lines.append("- None")
+        if not hide_sources:
+            lines.extend(["", "---", "", "## Sources"])
+            if combined_notes:
+                lines.extend(combined_notes)
+            else:
+                lines.append("- None")
 
         pages[display_title] = "\n".join(lines)
 
