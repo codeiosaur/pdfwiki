@@ -119,3 +119,17 @@ def looks_like_uuid(s: str) -> bool:
         r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
         s.strip().lower()
     ))
+
+
+def all_sources_are_uuids(text_to_sources: dict[str, list[str]]) -> bool:
+    """Return True when every source ID in the map looks like a UUID.
+
+    Used by renderers to decide whether to suppress the Sources section and
+    inline footnote references.  When chunks only have UUID IDs (no page
+    numbers / filenames yet), showing them adds noise without value.
+    """
+    for source_ids in text_to_sources.values():
+        for sid in source_ids:
+            if sid and sid != "unknown" and not looks_like_uuid(sid):
+                return False
+    return True
