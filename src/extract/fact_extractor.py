@@ -187,12 +187,13 @@ def extract_raw_statements_batched(
         prompt = f"""Extract factual statements from the text sections below.
 
 Rules:
+- Be thorough -- extract 8-15 statements per text section.
 - Each statement must be ONE complete, self-contained factual claim.
 - Write clear sentences a student could study from.
+- Include definitions, relationships between concepts, rules, exceptions, and comparisons.
 - Skip worked examples with specific dollar amounts.
 - Skip instructions ("calculate...", "determine...", "prepare...").
 - Skip figure/table references and page numbers.
-- Keep definitions, descriptions, comparisons, and formulas.
 - Include the source_chunk_id from the [CHUNK_ID=...] marker.
 
 Allowed source_chunk_id values: {sorted(allowed_chunk_ids)}

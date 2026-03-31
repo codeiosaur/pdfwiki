@@ -37,6 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--output",
+        metavar="DIR",
+        default="./vault",
+        help=(
+            "Directory to write concept pages into. "
+            "Each page is saved as its own .md file. "
+            "Created if it does not exist. Default: ./vault"
+        ),
+    )
+
     return parser
 
 

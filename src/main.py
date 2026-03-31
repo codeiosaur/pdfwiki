@@ -3,6 +3,7 @@ from typing import Iterator, List, Optional
 import json
 import os
 import re
+import sys
 
 from backend import create_backend, create_pass_backends, LLMBackend, LLMBackendError
 from extract.fact_extractor import (
@@ -25,13 +26,60 @@ from transform.filter import filter_concepts
 from generate.renderers import (
     generate_pages,
     generate_pages_wiki,
-    render_pages_document,
     render_pages_preview,
 )
 from transform.matching import has_antonym_conflict, is_sibling, tokenize_for_matching
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 EVALUATION_CACHE_PATH = Path(__file__).with_name("evaluation_metrics.json")
+
+# Characters that are invalid in filenames on Windows / macOS / Linux.
+_INVALID_FILENAME_CHARS = str.maketrans({c: "" for c in r'\/:*?"<>|'})
+
+
+def write_vault(pages: dict[str, str], output_dir: Path) -> None:
+    """
+    Write each concept page as an individual .md file into output_dir.
+
+    - If output_dir does not exist, it is created.
+    - If output_dir exists and is non-empty, a warning is printed and writing continues.
+    - If the directory cannot be created or a file cannot be written due to a
+      permission error or OS error, the process exits with a helpful message.
+    """
+    if not output_dir.exists():
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            print(f"Error: Cannot create output directory '{output_dir}': {exc}")
+            print("Check that you have write permission to the parent directory.")
+            sys.exit(1)
+        except OSError as exc:
+            print(f"Error: Failed to create output directory '{output_dir}': {exc}")
+            sys.exit(1)
+    else:
+        existing = list(output_dir.iterdir())
+        if existing:
+            print(
+                f"Warning: Output directory '{output_dir}' already exists and "
+                f"contains {len(existing)} file(s). Adding pages to existing directory."
+            )
+
+    written = 0
+    for title, content in pages.items():
+        safe_name = title.translate(_INVALID_FILENAME_CHARS).strip() or "Unnamed Concept"
+        file_path = output_dir / f"{safe_name}.md"
+        try:
+            file_path.write_text(content, encoding="utf-8")
+            written += 1
+        except PermissionError:
+            print(f"Error: Cannot write '{file_path}': permission denied.")
+            print("Check that you have write access to the output directory.")
+            sys.exit(1)
+        except OSError as exc:
+            print(f"Error: Failed to write '{file_path}': {exc}")
+            sys.exit(1)
+
+    print(f"Vault written: {written} pages -> {output_dir}/")
 
 
 def generate_chunk_batches(chunks: List[Chunk], batch_size: int = 2) -> Iterator[List[Chunk]]:
@@ -497,15 +545,7 @@ if __name__ == "__main__":
         print("\n=== PAGE PREVIEW (FIRST 1-2) ===")
         print(preview)
 
-    pages_doc = render_pages_document(pages)
-    pages_output_path = (
-        Path("output") / "concept_pages_enhanced" / "concept_pages_sample.md"
-        if enhanced_mode
-        else Path("output") / "concept_pages_sample.md"
-    )
-    pages_output_path.parent.mkdir(parents=True, exist_ok=True)
-    pages_output_path.write_text(pages_doc, encoding="utf-8")
-    print(f"Saved combined pages to {pages_output_path}")
+    write_vault(pages, Path(args.output))
 
     eval_result = evaluate_concepts(final_grouped)
 
