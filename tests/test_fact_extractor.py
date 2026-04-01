@@ -8,6 +8,7 @@ import pytest
 from extract.fact_extractor import (
     extract_raw_statements_batched,
     assign_concepts_to_statements,
+    derive_seed_concepts,
 )
 
 
@@ -47,6 +48,14 @@ class TestDefaultBatchSizes:
     def test_assign_concepts_default_batch_size_is_16(self):
         sig = inspect.signature(assign_concepts_to_statements)
         assert sig.parameters["batch_size"].default == 16
+
+    def test_derive_seed_concepts_default_target_count_is_40(self):
+        sig = inspect.signature(derive_seed_concepts)
+        assert sig.parameters["target_count"].default == 40
+
+    def test_derive_seed_concepts_default_sample_size_is_120(self):
+        sig = inspect.signature(derive_seed_concepts)
+        assert sig.parameters["sample_size"].default == 120
 
 
 # ---------------------------------------------------------------------------
