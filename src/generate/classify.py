@@ -87,7 +87,7 @@ def _is_low_signal_key_point(text: str) -> bool:
         return True
     if _numeric_density(text) >= 0.22:
         return True
-    if len(re.findall(r"\S+", text)) < 4:
+    if len(re.findall(r"\S+", text)) < 6:
         return True
     return False
 
@@ -212,6 +212,15 @@ def select_definition(concept: str, facts: List[str]) -> Optional[str]:
         if re.match(r"^(a|an|the)\s+[a-z]", lower):
             score += 1
 
+        first_8_text = " ".join(re.findall(r"\S+", lower)[:8])
+        if concept_lower in first_8_text:
+            score += 2
+
+        if concept_tokens:
+            article_match = re.match(r"^(?:a|an|the)\s+(\w+)", lower)
+            if article_match and article_match.group(1) in concept_tokens:
+                score += 1
+
         if concept_lower in lower:
             score += 1
         elif concept_tokens and any(token in lower for token in concept_tokens):
@@ -230,8 +239,8 @@ def select_definition(concept: str, facts: List[str]) -> Optional[str]:
         if any(term in lower for term in ["calculate", "use the following", "assume"]):
             score -= 2
 
-        if len(re.findall(r"\S+", text)) > 40:
-            score -= 2
+        if len(re.findall(r"\S+", text)) > 55:
+            score -= 1
 
         vague_markers = [
             "key aspect", "important", "various", "etc",

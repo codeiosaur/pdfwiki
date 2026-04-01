@@ -7,6 +7,7 @@ from generate.classify import (
     classify_semantic_fact,
     select_definition,
     pick_best_definition,
+    _is_low_signal_key_point,
 )
 
 
@@ -130,6 +131,91 @@ class TestSelectDefinition:
         result = select_definition("FIFO", facts)
         assert result is not None
         assert "$" not in result or "FIFO is" in result
+
+
+class TestIsLowSignalKeyPoint:
+    def test_too_short_five_words(self):
+        # 5 words — below new threshold of 6
+        assert _is_low_signal_key_point("Short five word fact.") is True
+
+    def test_five_words_exactly(self):
+        assert _is_low_signal_key_point("One two three four five") is True
+
+    def test_six_words_not_low_signal(self):
+        # 6 words — meets new threshold, no other flags
+        assert _is_low_signal_key_point("One two three four five six") is False
+
+    def test_old_threshold_four_words_still_low_signal(self):
+        # 4 words would also have been caught by the old rule; still low-signal
+        assert _is_low_signal_key_point("Too short fact.") is True
+
+
+class TestSelectDefinitionScoring:
+    def test_concept_in_first_8_tokens_scores_higher(self):
+        # "Amortization is..." — concept in first 8 tokens should win over a
+        # late-mention fact of similar structure
+        facts = [
+            "The gradual reduction of a debt is called amortization.",  # concept late
+            "Amortization is the gradual reduction of a debt over time.",  # concept in first 8
+        ]
+        result = select_definition("Amortization", facts)
+        assert result is not None
+        assert result.startswith("Amortization")
+
+    def test_concept_beyond_8_tokens_no_early_bonus(self):
+        # Concept appears only after token 8 — should not get the +2 bonus
+        facts = [
+            "Over a long period of time, the process known as amortization reduces debt.",
+            "Amortization is the gradual reduction of a debt over time.",
+        ]
+        result = select_definition("Amortization", facts)
+        assert result is not None
+        assert result.startswith("Amortization")
+
+    def test_noun_phrase_start_matching_concept_token_scores_higher(self):
+        # "The [concept-token] ..." should get +1 noun-phrase bonus over a generic opener
+        facts = [
+            "An entity records costs gradually over the useful life.",  # generic article, no concept token
+            "The amortization schedule shows equal payments across periods.",  # "The [concept token]"
+        ]
+        result = select_definition("Amortization", facts)
+        assert result is not None
+        assert "amortization schedule" in result.lower()
+
+    def test_long_fact_over_55_words_mild_penalty(self):
+        # A 56-word definition should still be selectable (only -1) if it otherwise scores well
+        long_def = (
+            "Amortization is the systematic allocation of the cost of an intangible asset "
+            "over its useful life, reflecting the consumption of economic benefits embedded "
+            "in the asset, recognized as an expense in the income statement each period "
+            "until the asset is fully written off and has no remaining book value whatsoever."
+        )
+        short_def = "Amortization is a process."
+        result = select_definition("Amortization", [long_def, short_def])
+        # Long rich definition should still win despite mild penalty
+        assert result is not None
+        assert "systematic allocation" in result
+
+    def test_fact_exactly_55_words_no_penalty(self):
+        # 55 words — should not incur the length penalty
+        words = ["word"] * 50
+        fact = "Amortization is the " + " ".join(words) + " end."
+        # Should return something (not None) since it has concept + definition markers
+        result = select_definition("Amortization", [fact])
+        assert result is not None
+
+    def test_fact_over_40_words_no_longer_hard_penalized(self):
+        # Old rule: -2 for > 40 words. New rule: -1 for > 55. A 45-word definition
+        # should no longer be penalized at all.
+        moderate_def = (
+            "Amortization is the process of spreading out a loan into a series of fixed "
+            "payments over time, covering both principal and interest components each period."
+        )
+        # This is ~30 words; pair with a weak competitor to confirm it wins cleanly
+        weak_def = "There are several amortization methods available."
+        result = select_definition("Amortization", [moderate_def, weak_def])
+        assert result is not None
+        assert "spreading out" in result
 
 
 class TestPickBestDefinition:
