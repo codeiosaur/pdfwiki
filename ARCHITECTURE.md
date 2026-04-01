@@ -103,6 +103,10 @@ All config via environment variables (or `.env` file). See `.env.example` for fu
 - `TWO_PASS=1` — Enable two-pass extraction (recommended)
 - `ENHANCED_PAGE_MODE=1` — Use wiki-style renderer
 
+## Tuning
+
+- **Batch sizes:** `extract_raw_statements_batched()` defaults to `batch_size=4` (chunks per LLM call); `assign_concepts_to_statements()` defaults to `batch_size=16` (statements per call). Pass a different value at the call site — no env var needed. Smaller batches help models with tight context windows; larger batches reduce round-trips.
+
 ## Known Limitations
 
 - **Source tracking:** Chunks use UUIDs, not page numbers. The Sources section on wiki pages is hidden until real source references are added to the chunker.

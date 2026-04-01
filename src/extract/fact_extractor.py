@@ -159,7 +159,7 @@ def _parse_json_object(raw_content: str):
 def extract_raw_statements_batched(
     chunks: List["Chunk"],
     backend: "LLMBackend",
-    batch_size: int = 2,
+    batch_size: int = 4,
 ) -> List[dict]:
     """
     Pass 1 (batched): Extract raw factual statements from chunks.
@@ -167,6 +167,10 @@ def extract_raw_statements_batched(
     The model only extracts facts — it does NOT assign concept names.
     This is a much simpler task for small models and produces
     cleaner output.
+
+    batch_size: number of chunks sent to the LLM in a single call (default 4).
+    Callers can pass a smaller value (e.g. 1 or 2) for models with a tight
+    context window, or a larger value to reduce total API round-trips.
     """
     if not chunks:
         return []
@@ -269,7 +273,7 @@ def assign_concepts_to_statements(
     statements: List[dict],
     backend: "LLMBackend",
     seed_concepts: Optional[List[str]] = None,
-    batch_size: int = 12,
+    batch_size: int = 16,
 ) -> List[Fact]:
     """
     Pass 2: Given raw statements, assign each to a concept name.
@@ -277,6 +281,10 @@ def assign_concepts_to_statements(
     Uses the seed concept list to anchor naming. The model can also
     propose NEW concept names if a statement doesn't fit any seed,
     but the seed list keeps most names consistent.
+
+    batch_size: number of statements sent to the LLM in a single call (default 16).
+    Callers can pass a smaller value for models that struggle with long contexts,
+    or a larger value to reduce total API round-trips.
     """
     if not statements:
         return []

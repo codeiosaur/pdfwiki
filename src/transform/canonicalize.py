@@ -127,7 +127,8 @@ def canonicalize_concepts(
     cache = load_canonical_cache()
     missing = [concept for concept in concepts if concept not in cache]
 
-    if not missing:
+    # Fast path: every concept is already cached — skip prompt construction entirely.
+    if len(missing) == 0:
         return {name: cache.get(name) for name in concepts}
 
     prompt = f"""
