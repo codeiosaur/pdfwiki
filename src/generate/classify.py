@@ -262,7 +262,7 @@ def select_definition(concept: str, facts: List[str]) -> Optional[str]:
             best_score = current_score
             best_fact = fact
 
-    if best_score < 0:
+    if best_score < -2:
         return None
     return best_fact
 

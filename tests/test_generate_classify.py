@@ -97,9 +97,11 @@ class TestSelectDefinition:
         assert "FIFO is a method" in result
 
     def test_returns_none_when_all_scores_low(self):
+        # Both facts score -3 (starts with "there are", no offsetting bonuses),
+        # which is below the threshold of -2, so the function should return None.
         facts = [
-            "There are many methods available.",
-            "Calculate using the following formula.",
+            "There are students who study this topic.",
+            "There are various types of scenarios.",
         ]
         result = select_definition("FIFO", facts)
         assert result is None

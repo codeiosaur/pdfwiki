@@ -10,7 +10,7 @@ Three rendering modes:
 import re
 
 from extract.fact_extractor import Fact
-from transform.matching import has_antonym_conflict
+from transform.matching import has_antonym_conflict, is_sibling
 
 from generate.classify import (
     classify_fact,
@@ -498,14 +498,28 @@ def generate_pages_wiki(
                 lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
             lines.append("")
 
-        # Related Concepts (chunk co-occurrence)
+        # Related Concepts (chunk co-occurrence with IDF penalty)
         lines.extend(["", "---", "", "## Related Concepts"])
-        related = build_related_concepts_by_chunks(concept, concept_chunks, concept_names)
+        related = build_related_concepts_by_chunks(
+            concept, concept_chunks, concept_names, grouped=grouped
+        )
         if related:
             for item in related:
                 lines.append(f"- [[{normalize_page_title(item)}]]")
         else:
             lines.append("- None")
+
+        # See Also — explicitly contrasting concepts (antonyms / siblings)
+        see_also = sorted(
+            normalize_page_title(other)
+            for other in concept_names
+            if other != concept
+            and (has_antonym_conflict(concept, other) or is_sibling(concept, other))
+        )
+        if see_also:
+            lines.extend(["", "---", "", "## See Also"])
+            for item in see_also:
+                lines.append(f"- [[{item}]]")
 
         # Source attribution — show filenames when available, hide UUIDs
         unique_sources = sorted({

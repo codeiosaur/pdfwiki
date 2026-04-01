@@ -171,7 +171,22 @@ def run_pipeline_two_pass(
 
     print(f"Pass 2: Assigning concept names to {len(all_statements)} statements "
           f"[{pass2_backend.label}:{pass2_backend.model}]...")
-    all_facts = assign_concepts_to_statements(all_statements, pass2_backend, seed_concepts=seeds)
+    chunk_size = max(batch_size * 4, 32)
+    statement_chunks = [
+        all_statements[i:i + chunk_size]
+        for i in range(0, len(all_statements), chunk_size)
+    ]
+    all_facts: List[Fact] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(assign_concepts_to_statements, chunk, pass2_backend, seeds)
+            for chunk in statement_chunks
+        ]
+        for future in as_completed(futures):
+            try:
+                all_facts.extend(future.result())
+            except Exception:
+                continue
     print(f"Pass 2 complete: {len(all_facts)} facts with concept names")
 
     return all_facts
@@ -454,7 +469,7 @@ if __name__ == "__main__":
     apply_args_to_env(args)
 
     demo_pdf_path = args.input or "./sample_accounting_openstax.pdf"
-    batch_size = int(os.getenv("PIPELINE_BATCH_SIZE", "2"))
+    batch_size = int(os.getenv("PIPELINE_BATCH_SIZE", "4"))
     max_workers = int(os.getenv("PIPELINE_MAX_WORKERS", "5"))
     max_chunks_env = os.getenv("PIPELINE_MAX_CHUNKS", "").strip()
     max_chunks = int(max_chunks_env) if max_chunks_env.isdigit() else None
@@ -517,7 +532,7 @@ if __name__ == "__main__":
     if use_two_pass:
         final_grouped = consolidate_concepts_llm(final_grouped, backend=canonicalize_backend)
 
-    min_facts = int(os.getenv("PIPELINE_MIN_FACTS_PER_CONCEPT", "1"))
+    min_facts = int(os.getenv("PIPELINE_MIN_FACTS_PER_CONCEPT", "2"))
     pre_prune_count = len(final_grouped)
     final_grouped = prune_low_signal_concepts(final_grouped, min_facts_per_concept=min_facts)
     pruned_count = max(0, pre_prune_count - len(final_grouped))
