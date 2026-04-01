@@ -175,14 +175,30 @@ class OpenAICompatBackend(LLMBackend):
                     # Some OpenRouter models satisfy json_schema constraints via a
                     # tool-call under the hood, leaving content=None and putting the
                     # JSON in tool_calls[0].function.arguments.
-                    if content is None and message is not None:
+                    if not content and message is not None:
                         tool_calls = getattr(message, "tool_calls", None)
                         if tool_calls:
                             content = tool_calls[0].function.arguments
 
-                    if content is None:
+                    if not content:
+                        # Build a diagnostic hint to help identify why the response was empty.
+                        # Reasoning models (e.g. Nemotron, DeepSeek-R1) spend tokens on
+                        # chain-of-thought that is counted in usage but not returned as content.
+                        hints: list[str] = []
+                        if message is not None:
+                            if getattr(message, "refusal", None):
+                                hints.append("model refused")
+                            reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+                            if reasoning:
+                                hints.append("model produced reasoning tokens but no output — try a non-reasoning model")
+                        usage = getattr(response, "usage", None)
+                        if usage:
+                            completion_tokens = getattr(usage, "completion_tokens", None)
+                            if completion_tokens:
+                                hints.append(f"{completion_tokens} completion tokens counted but content empty")
+                        hint_str = f" ({'; '.join(hints)})" if hints else ""
                         raise LLMBackendError(
-                            f"[{self.label}] Empty response from {model}"
+                            f"[{self.label}] Empty response from {model}{hint_str}"
                         )
                     return content
 
