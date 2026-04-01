@@ -99,7 +99,10 @@ def build_enhanced_intro(
             break
 
     if not secondary:
-        return primary
+        combined = primary
+    else:
+        secondary = secondary[0].upper() + secondary[1:] if secondary else secondary
+        combined = f"{primary} {secondary}"
 
-    secondary = secondary[0].upper() + secondary[1:] if secondary else secondary
-    return f"{primary} {secondary}"
+    sentences = re.split(r"(?<=[.!?])\s+", combined.strip())
+    return " ".join(sentences[:2])

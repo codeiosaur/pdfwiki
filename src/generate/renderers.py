@@ -7,6 +7,8 @@ Three rendering modes:
   generate_pages_wiki     — wiki-style with templates, wikilinks, clean sources
 """
 
+import re
+
 from extract.fact_extractor import Fact
 from transform.matching import has_antonym_conflict
 
@@ -413,6 +415,20 @@ def generate_pages_wiki(
             extra = interpretations[0].strip()
             extra = extra[0].upper() + extra[1:] if extra else extra
             intro = f"{intro} {extra}"
+
+        # Strip "**Title**: Title ..." redundancy when the definition already
+        # re-introduces the concept (e.g. normalized title has "(DSI)" but
+        # the definition says "DSI is ..." without parentheses).
+        bolded_prefix = f"**{display_title}**: "
+        if intro.startswith(bolded_prefix):
+            remainder = intro[len(bolded_prefix):]
+            _stopwords = {"a", "an", "the", "of", "in", "on", "by", "to", "for", "and", "or"}
+            title_words = display_title.lower().split()
+            title_first = next((w for w in title_words if w not in _stopwords), "")
+            remainder_words = re.findall(r"[a-z0-9]+", remainder.lower())
+            if title_first and remainder_words and remainder_words[0] == title_first:
+                intro = remainder
+
         intro = inject_wikilinks(intro, all_display_titles, display_title)
 
         # --- Assemble page by concept type (no footnote suffixes) ---
