@@ -33,7 +33,7 @@ class Fact:
 # --seeds file is provided.  Domain-specific data lives in seeds/*.json,
 # not in Python source.
 # ---------------------------------------------------------------------------
-_BUILTIN_SEEDS_FILE = Path(__file__).parent.parent / "seeds" / "accounting.json"
+_BUILTIN_SEEDS_FILE = Path(__file__).parent.parent.parent / "seeds" / "accounting.json"
 
 
 def load_builtin_seeds() -> List[str]:
@@ -98,13 +98,8 @@ Statements:
 Output ONLY a JSON array of concept name strings:
 ["Concept Name", "Another Concept", ...]"""
 
-    schema = {
-        "name": "seed_concepts",
-        "schema": {"type": "array", "items": {"type": "string"}},
-    }
-
     try:
-        raw = backend.generate(prompt, json_schema=schema)
+        raw = backend.generate(prompt)
     except Exception as exc:
         print(f"  [pass1.5] Failed to derive seeds: {exc}")
         return []

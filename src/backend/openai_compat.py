@@ -150,7 +150,17 @@ class OpenAICompatBackend(LLMBackend):
             try:
                 response = self._client.chat.completions.create(**kwargs)
 
-                content = response.choices[0].message.content if response.choices else None
+                message = response.choices[0].message if response.choices else None
+                content = message.content if message else None
+
+                # Some OpenRouter models satisfy json_schema constraints via a
+                # tool-call under the hood, leaving content=None and putting the
+                # JSON in tool_calls[0].function.arguments.
+                if content is None and message is not None:
+                    tool_calls = getattr(message, "tool_calls", None)
+                    if tool_calls:
+                        content = tool_calls[0].function.arguments
+
                 if content is None:
                     raise LLMBackendError(
                         f"[{self.label}] Empty response from {self._config.model}"
@@ -165,14 +175,16 @@ class OpenAICompatBackend(LLMBackend):
                     or "rate limit" in str(exc).lower()
                     or "rate_limit" in str(exc).lower()
                 )
+                is_empty_response = "Empty response" in str(exc)
 
-                if not is_rate_limit or attempt >= _MAX_RETRIES:
+                if not (is_rate_limit or is_empty_response) or attempt >= _MAX_RETRIES:
                     raise LLMBackendError(
                         f"[{self.label}] Request to {self._config.base_url} failed: {exc}"
                     ) from exc
 
                 wait_time = min(backoff, _MAX_BACKOFF_SECONDS)
-                print(f"  [{self.label}] Rate limited (attempt {attempt + 1}/{_MAX_RETRIES + 1}), "
+                reason = "Rate limited" if is_rate_limit else "Empty response"
+                print(f"  [{self.label}] {reason} (attempt {attempt + 1}/{_MAX_RETRIES + 1}), "
                       f"retrying in {wait_time:.0f}s...")
                 time.sleep(wait_time)
                 backoff *= _BACKOFF_MULTIPLIER
