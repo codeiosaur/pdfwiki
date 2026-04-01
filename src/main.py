@@ -2,8 +2,10 @@ from pathlib import Path
 from typing import Iterator, List, Optional
 import json
 import os
+import random
 import re
 import sys
+import time
 
 from backend import create_backend, create_pass_backends, LLMBackend, LLMBackendError
 from extract.fact_extractor import (
@@ -117,9 +119,10 @@ def resolve_seed_concepts(
 
     print(f"Pass 1.5: Deriving seed concepts from statements "
           f"[{pass2_backend.label}:{pass2_backend.model}]...")
+    t0 = time.time()
     seeds = derive_seed_concepts(statements, pass2_backend)
     if seeds:
-        print(f"Pass 1.5 complete: {len(seeds)} seed concepts derived")
+        print(f"Pass 1.5 complete: {len(seeds)} seed concepts derived ({time.time() - t0:.0f}s)")
         return seeds
 
     builtin = load_builtin_seeds()
@@ -207,11 +210,13 @@ def run_pipeline_two_pass(
 
     print(f"Pass 1: Extracting raw statements from {len(chunks)} chunks "
           f"[{pass1_backend.label}:{pass1_backend.model}]...")
+    t0 = time.time()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(extract_raw_statements_batched, batch, pass1_backend, batch_size)
-            for batch in chunk_batches
-        ]
+        futures = []
+        for i, batch in enumerate(chunk_batches):
+            if i > 0:
+                time.sleep(random.uniform(1.0, 3.0))
+            futures.append(executor.submit(extract_raw_statements_batched, batch, pass1_backend, batch_size))
         for future in as_completed(futures):
             try:
                 batch_statements = future.result()
@@ -219,7 +224,7 @@ def run_pipeline_two_pass(
             except Exception:
                 continue
 
-    print(f"Pass 1 complete: {len(all_statements)} raw statements extracted")
+    print(f"Pass 1 complete: {len(all_statements)} raw statements extracted ({time.time() - t0:.0f}s)")
 
     seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=seeds_file)
 
@@ -232,6 +237,7 @@ def run_pipeline_two_pass(
 
     print(f"Pass 2: Assigning concept names to {len(all_statements)} statements "
           f"[{pass2_backend.label}:{pass2_backend.model}]...")
+    t0 = time.time()
     chunk_size = max(batch_size * 4, 32)
     statement_chunks = [
         all_statements[i:i + chunk_size]
@@ -251,7 +257,7 @@ def run_pipeline_two_pass(
                 all_facts.extend(future.result())
             except Exception:
                 continue
-    print(f"Pass 2 complete: {len(all_facts)} facts with concept names")
+    print(f"Pass 2 complete: {len(all_facts)} facts with concept names ({time.time() - t0:.0f}s)")
 
     # E: remap off-seed concept names back to seeds for local models
     if not use_strict:
@@ -638,6 +644,8 @@ if __name__ == "__main__":
         pass2_backend = backend
         canonicalize_backend = backend
 
+    pipeline_start = time.time()
+
     if use_two_pass:
         print("\n=== USING TWO-PASS PIPELINE ===")
         all_facts = run_pipeline_two_pass(
@@ -732,6 +740,7 @@ if __name__ == "__main__":
     print("\n=== EVALUATION ===")
     for k, v in eval_result.items():
         print(k, ":", v)
+    print(f"total_pipeline_time : {time.time() - pipeline_start:.0f}s")
 
     previous_eval = load_previous_evaluation()
     check_evaluation_assertions(eval_result, previous_eval)
