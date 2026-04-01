@@ -93,39 +93,59 @@ def classify_concept_type(concept: str, fact_contents: Optional[list[str]] = Non
     return "general"
 
 
-def inject_wikilinks(text: str, all_titles: set[str], current_title: str) -> str:
+def inject_wikilinks(
+    text: str,
+    all_titles: set[str],
+    current_title: str,
+    alias_map: Optional[dict[str, str]] = None,
+) -> str:
     """
     Replace occurrences of other concept titles with [[wikilinks]] in body text.
     Only links each concept once (first occurrence).
     Skips text already inside [[ ]] to prevent nested links.
+
+    alias_map: optional {alias_lowercase: canonical_display_title}.  Aliases
+    are tried before exact titles, allowing acronyms (e.g. "FIFO") to link to
+    their full-name page even when the full title doesn't appear in the text.
     """
-    if not all_titles:
+    if not all_titles and not alias_map:
         return text
 
-    sorted_titles = sorted(all_titles - {current_title}, key=len, reverse=True)
-    linked: set[str] = set()
+    linked: set[str] = set()  # canonical titles already injected
 
-    for title in sorted_titles:
-        if title in linked:
-            continue
-
+    def _inject_one(match_text: str, canonical: str) -> bool:
+        """Inject [[canonical]] for the first match of match_text. Returns True on success."""
+        nonlocal text
         parts = re.split(r'(\[\[[^\]]*\]\])', text)
+        pattern = re.compile(r'\b' + re.escape(match_text) + r'\b', re.IGNORECASE)
         replaced = False
         new_parts = []
         for part in parts:
             if part.startswith("[[") and part.endswith("]]"):
                 new_parts.append(part)
-            elif not replaced:
-                pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
-                if pattern.search(part):
-                    part = pattern.sub(f"[[{title}]]", part, count=1)
-                    replaced = True
+            elif not replaced and pattern.search(part):
+                part = pattern.sub(f"[[{canonical}]]", part, count=1)
+                replaced = True
                 new_parts.append(part)
             else:
                 new_parts.append(part)
-
         if replaced:
             text = "".join(new_parts)
+        return replaced
+
+    # Pass 1: alias injection — longest alias first so more specific wins
+    if alias_map:
+        for alias_lower, canonical in sorted(alias_map.items(), key=lambda x: len(x[0]), reverse=True):
+            if canonical == current_title or canonical in linked:
+                continue
+            if _inject_one(alias_lower, canonical):
+                linked.add(canonical)
+
+    # Pass 2: exact-title injection — longest title first
+    for title in sorted(all_titles - {current_title}, key=len, reverse=True):
+        if title in linked:
+            continue
+        if _inject_one(title, title):
             linked.add(title)
 
     return text

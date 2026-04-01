@@ -117,6 +117,48 @@ class TestInjectWikilinks:
         result = inject_wikilinks(text, {"FIFO"}, "Current Page")
         assert "[[FIFO]]" in result
 
+    # --- alias_map tests ---
+
+    def test_alias_links_acronym_to_full_title(self):
+        """An acronym alias should link to its canonical title even when the full title is absent."""
+        text = "FIFO assigns older costs to expenses first."
+        alias_map = {"fifo": "First In First Out"}
+        result = inject_wikilinks(text, {"First In First Out"}, "Current Page", alias_map=alias_map)
+        assert "[[First In First Out]]" in result
+
+    def test_alias_match_is_case_insensitive(self):
+        text = "Under fifo, the oldest costs are used."
+        alias_map = {"fifo": "First In First Out"}
+        result = inject_wikilinks(text, {"First In First Out"}, "Current Page", alias_map=alias_map)
+        assert "[[First In First Out]]" in result
+
+    def test_alias_does_not_link_current_page(self):
+        """An alias pointing to the current page must not create a self-link."""
+        text = "FIFO assigns the oldest costs."
+        alias_map = {"fifo": "First In First Out"}
+        result = inject_wikilinks(text, set(), "First In First Out", alias_map=alias_map)
+        assert "[[" not in result
+
+    def test_alias_linked_only_once(self):
+        """A canonical title reached via alias should be linked at most once."""
+        text = "FIFO is a method. FIFO reduces ending inventory cost."
+        alias_map = {"fifo": "First In First Out"}
+        result = inject_wikilinks(text, {"First In First Out"}, "Current Page", alias_map=alias_map)
+        assert result.count("[[First In First Out]]") == 1
+
+    def test_alias_exact_title_not_doubled_after_alias(self):
+        """Once an alias injects the canonical title, the exact-title pass must not add it again."""
+        text = "FIFO is used. First In First Out was introduced in the 1920s."
+        alias_map = {"fifo": "First In First Out"}
+        result = inject_wikilinks(text, {"First In First Out"}, "Current Page", alias_map=alias_map)
+        assert result.count("[[First In First Out]]") == 1
+
+    def test_no_alias_map_behaviour_unchanged(self):
+        """Calling without alias_map must produce the same output as before."""
+        text = "Balance Sheet is a financial statement."
+        result = inject_wikilinks(text, {"Balance Sheet"}, "Current Page")
+        assert "[[Balance Sheet]]" in result
+
 
 class TestPromoteAllFactsToContent:
     def test_excludes_definition(self):
