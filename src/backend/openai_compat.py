@@ -69,6 +69,9 @@ class OpenAICompatBackend(LLMBackend):
         )
         self._is_openrouter = _is_openrouter(config.base_url)
         self._fallback_models: list[str] = []
+        # Local endpoints (Ollama, LM Studio) rarely hit 429s and recover quickly.
+        # Use a shorter initial backoff for them; keep the longer default for OpenRouter.
+        self._initial_backoff = _INITIAL_BACKOFF_SECONDS if self._is_openrouter else 1.0
 
     def set_fallback_models(self, models: list[str]) -> None:
         """Set fallback model IDs for OpenRouter's model fallback feature."""
@@ -136,7 +139,7 @@ class OpenAICompatBackend(LLMBackend):
 
         # Retry loop with backoff for rate limits
         last_exc: Optional[Exception] = None
-        backoff = _INITIAL_BACKOFF_SECONDS
+        backoff = self._initial_backoff
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
