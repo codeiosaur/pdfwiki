@@ -53,6 +53,22 @@ IMPERATIVE_STARTERS = {
     "compute", "apply", "solve", "examine", "check", "verify", "state",
 }
 
+# Adjectives that signal a predicate phrase rather than a real concept name.
+# e.g. "Higher Profit", "True Ownership", "Better Method" are fragments of
+# sentences, not concepts a student would look up.
+ADJECTIVE_FIRST_STARTERS = {
+    "higher", "lower", "high", "low", "greater", "lesser",
+    "true", "false", "real", "proper", "correct", "incorrect",
+    "good", "bad", "better", "worse", "best", "worst",
+    "large", "small", "larger", "smaller", "additional", "extra",
+    "old", "new", "same", "different", "full", "partial",
+    "similar", "common", "general", "specific", "typical",
+    "significant", "important", "accurate", "inaccurate",
+}
+
+# Resource-type suffixes that indicate a website/platform reference rather than a concept.
+_RESOURCE_SUFFIXES = {"website", "portal", "page", "site", "platform", "tool"}
+
 
 def is_valid_concept(name: str) -> bool:
     """
@@ -126,7 +142,18 @@ def is_valid_concept(name: str) -> bool:
     }
     if len(words) == 1 and name.lower() in GENERIC_JUNK_WORDS:
         return False
-    
+
+    # Rule 9: Reject adjective-first phrases — these are sentence fragments,
+    # not concept names (e.g. "Higher Profit", "True Ownership").
+    if first_word in ADJECTIVE_FIRST_STARTERS:
+        return False
+
+    # Rule 10: Reject concepts that end with a resource-type suffix
+    # (e.g. "SEC Website", "Company Portal") — these are navigation references.
+    last_word = words[-1].rstrip(".,!?;:").lower()
+    if last_word in _RESOURCE_SUFFIXES:
+        return False
+
     return True
 
 

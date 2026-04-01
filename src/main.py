@@ -29,6 +29,7 @@ from generate.renderers import (
     render_pages_preview,
 )
 from transform.matching import has_antonym_conflict, is_sibling, tokenize_for_matching
+from generate.titles import concept_tokens
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 EVALUATION_CACHE_PATH = Path(__file__).with_name("evaluation_metrics.json")
@@ -127,6 +128,59 @@ def resolve_seed_concepts(
     return builtin
 
 
+def _anchor_facts_to_seeds(facts: List[Fact], seeds: List[str]) -> List[Fact]:
+    """
+    Post-Pass-2 seed anchoring (improvement E — local model support).
+
+    When Pass 2 is local, the model often ignores the seed list and invents
+    concept names.  For each fact whose concept is NOT in the seed set, try
+    to remap it to the most similar seed by token overlap.  Only remap when
+    the best-matching seed shares at least one non-trivial token (similarity
+    ≥ 0.5 of the fact's concept tokens).  Facts with no good match are left
+    as-is for the downstream filter/normalize passes to handle.
+    """
+    seed_set = set(seeds)
+    seed_token_map = {s: concept_tokens(s) for s in seeds}
+
+    remapped = 0
+    result: List[Fact] = []
+    for fact in facts:
+        if fact.concept in seed_set:
+            result.append(fact)
+            continue
+
+        fact_toks = concept_tokens(fact.concept)
+        if not fact_toks:
+            result.append(fact)
+            continue
+
+        best_seed: Optional[str] = None
+        best_score = 0.0
+        for seed, seed_toks in seed_token_map.items():
+            if not seed_toks:
+                continue
+            shared = len(fact_toks & seed_toks)
+            score = shared / len(fact_toks)
+            if score > best_score:
+                best_score = score
+                best_seed = seed
+
+        if best_seed is not None and best_score >= 0.5:
+            result.append(Fact(
+                id=fact.id,
+                concept=best_seed,
+                content=fact.content,
+                source_chunk_id=fact.source_chunk_id,
+            ))
+            remapped += 1
+        else:
+            result.append(fact)
+
+    if remapped:
+        print(f"  [seed-anchor] Remapped {remapped} facts to nearest seed concept")
+    return result
+
+
 def run_pipeline_two_pass(
     pdf_path: str,
     pass1_backend: LLMBackend,
@@ -169,6 +223,11 @@ def run_pipeline_two_pass(
 
     seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=seeds_file)
 
+    # H: use strict seed enforcement when Pass 2 is OpenRouter (enum schema enforced server-side)
+    use_strict = getattr(pass2_backend, "is_openrouter", False)
+    if use_strict:
+        print(f"Pass 2: strict seed enforcement enabled (OpenRouter enum schema)")
+
     print(f"Pass 2: Assigning concept names to {len(all_statements)} statements "
           f"[{pass2_backend.label}:{pass2_backend.model}]...")
     chunk_size = max(batch_size * 4, 32)
@@ -179,7 +238,10 @@ def run_pipeline_two_pass(
     all_facts: List[Fact] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(assign_concepts_to_statements, chunk, pass2_backend, seeds)
+            executor.submit(
+                assign_concepts_to_statements, chunk, pass2_backend, seeds,
+                16, use_strict,
+            )
             for chunk in statement_chunks
         ]
         for future in as_completed(futures):
@@ -188,6 +250,10 @@ def run_pipeline_two_pass(
             except Exception:
                 continue
     print(f"Pass 2 complete: {len(all_facts)} facts with concept names")
+
+    # E: remap off-seed concept names back to seeds for local models
+    if not use_strict:
+        all_facts = _anchor_facts_to_seeds(all_facts, seeds)
 
     return all_facts
 
@@ -225,6 +291,87 @@ def run_pipeline_parallel(
                 continue
 
     return all_facts
+
+
+# ===================================================================
+# Enrichment pass — fill thin concept pages
+# ===================================================================
+
+def enrich_thin_concepts(
+    grouped: dict[str, List[Fact]],
+    backend: LLMBackend,
+    min_facts: int = 4,
+) -> dict[str, List[Fact]]:
+    """
+    Improvement A: For concepts with fewer than min_facts facts, ask the LLM
+    to generate additional factual statements about that concept.
+
+    This directly addresses definition-only stub pages by adding formula
+    descriptions, interpretations, comparisons, and practical notes that
+    Pass 1 may have missed when the source text was sparse.
+
+    Only concepts with an existing definition (at least 1 fact) are enriched —
+    completely empty concepts are skipped.
+    """
+    import uuid as _uuid
+    from extract.fact_extractor import _parse_json_array
+
+    enriched: dict[str, List[Fact]] = {}
+    total_added = 0
+
+    for concept, facts in grouped.items():
+        enriched[concept] = list(facts)
+        if len(facts) >= min_facts:
+            continue
+
+        existing = " ".join(f.content for f in facts[:3])
+        prompt = f"""The following concept has only a few facts extracted so far.
+Generate {min_facts - len(facts) + 2} additional distinct factual statements about "{concept}".
+
+Existing facts:
+{existing}
+
+Rules:
+- Each statement must be ONE complete, self-contained factual claim.
+- Include how it is calculated or measured (if applicable).
+- Include what it indicates when high or low (if applicable).
+- Include how it relates to or differs from similar concepts (if applicable).
+- Do NOT repeat the existing facts.
+- Write clear sentences a student could study from.
+
+Output ONLY a JSON array of strings:
+["Fact one.", "Fact two.", ...]"""
+
+        try:
+            raw = backend.generate(prompt, max_tokens=600)
+        except Exception as exc:
+            print(f"  [enrich] {concept}: LLM call failed: {exc}")
+            continue
+
+        parsed = _parse_json_array(raw)
+        if not isinstance(parsed, list):
+            continue
+
+        added = 0
+        for item in parsed:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            enriched[concept].append(Fact(
+                id=str(_uuid.uuid4()),
+                concept=concept,
+                content=item.strip(),
+                source_chunk_id="",
+            ))
+            added += 1
+
+        if added:
+            total_added += added
+
+    if total_added:
+        print(f"  [enrich] Added {total_added} facts across "
+              f"{sum(1 for c, f in grouped.items() if len(f) < min_facts and c in enriched)} thin concepts")
+
+    return enriched
 
 
 # ===================================================================
@@ -532,7 +679,14 @@ if __name__ == "__main__":
     if use_two_pass:
         final_grouped = consolidate_concepts_llm(final_grouped, backend=canonicalize_backend)
 
-    min_facts = int(os.getenv("PIPELINE_MIN_FACTS_PER_CONCEPT", "2"))
+    enrich_threshold = int(os.getenv("PIPELINE_ENRICH_THRESHOLD", "4"))
+    if enrich_threshold > 0:
+        print(f"\nEnrichment pass: filling concepts with < {enrich_threshold} facts...")
+        final_grouped = enrich_thin_concepts(
+            final_grouped, backend=canonicalize_backend, min_facts=enrich_threshold
+        )
+
+    min_facts = int(os.getenv("PIPELINE_MIN_FACTS_PER_CONCEPT", "1"))
     pre_prune_count = len(final_grouped)
     final_grouped = prune_low_signal_concepts(final_grouped, min_facts_per_concept=min_facts)
     pruned_count = max(0, pre_prune_count - len(final_grouped))

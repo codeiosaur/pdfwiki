@@ -275,6 +275,7 @@ def assign_concepts_to_statements(
     backend: "LLMBackend",
     seed_concepts: Optional[List[str]] = None,
     batch_size: int = 16,
+    strict_seeds: bool = False,
 ) -> List[Fact]:
     """
     Pass 2: Given raw statements, assign each to a concept name.
@@ -284,8 +285,10 @@ def assign_concepts_to_statements(
     but the seed list keeps most names consistent.
 
     batch_size: number of statements sent to the LLM in a single call (default 16).
-    Callers can pass a smaller value for models that struggle with long contexts,
-    or a larger value to reduce total API round-trips.
+    strict_seeds: when True, the model must pick from the seed list (no invention).
+                  Use this with OpenRouter where the JSON schema enum is enforced
+                  server-side. Removes the "create a new name" instruction and adds
+                  an enum constraint to the output schema.
     """
     if not statements:
         return []
@@ -302,7 +305,24 @@ def assign_concepts_to_statements(
             f"  {j+1}. {s['statement']}" for j, s in enumerate(batch)
         )
 
-        prompt = f"""Assign each statement below to exactly ONE concept name.
+        if strict_seeds:
+            prompt = f"""Assign each statement below to exactly ONE concept name from the approved list.
+
+APPROVED concept names — you MUST use one of these, no exceptions:
+{seed_block}
+
+Rules:
+- Every statement must be assigned to the single most relevant name from the list above.
+- If a statement fits multiple concepts from the list, assign it to the more specific one.
+- Do NOT invent new concept names.
+
+Statements:
+{numbered_statements}
+
+Output ONLY a JSON array with one entry per statement:
+[{{"index": 1, "concept": "Concept Name"}}, {{"index": 2, "concept": "Concept Name"}}]"""
+        else:
+            prompt = f"""Assign each statement below to exactly ONE concept name.
 
 PREFERRED concept names (use one of these when the statement is about that topic):
 {seed_block}
@@ -321,7 +341,16 @@ Statements:
 Output ONLY a JSON array with one entry per statement:
 [{{"index": 1, "concept": "Concept Name"}}, {{"index": 2, "concept": "Concept Name"}}]"""
 
-        # JSON schema for structured output (enforced by OpenRouter, best-effort elsewhere)
+        # JSON schema for structured output (enforced by OpenRouter, best-effort elsewhere).
+        # When strict_seeds=True, add an enum constraint so OpenRouter enforces seed adherence
+        # server-side — the model cannot output a concept not in the approved list.
+        concept_property: dict = {
+            "type": "string",
+            "description": "The assigned concept name (1-4 word noun phrase)",
+        }
+        if strict_seeds and seeds:
+            concept_property["enum"] = seeds
+
         concept_assignment_schema = {
             "name": "concept_assignments",
             "schema": {
@@ -333,10 +362,7 @@ Output ONLY a JSON array with one entry per statement:
                             "type": "integer",
                             "description": "The statement number (1-based)",
                         },
-                        "concept": {
-                            "type": "string",
-                            "description": "The assigned concept name (1-4 word noun phrase)",
-                        },
+                        "concept": concept_property,
                     },
                     "required": ["index", "concept"],
                     "additionalProperties": False,
