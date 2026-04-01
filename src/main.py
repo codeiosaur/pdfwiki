@@ -682,12 +682,20 @@ if __name__ == "__main__":
     if use_two_pass:
         final_grouped = consolidate_concepts_llm(final_grouped, backend=canonicalize_backend)
 
-    enrich_threshold = int(os.getenv("PIPELINE_ENRICH_THRESHOLD", "4"))
+    enrich_threshold = int(os.getenv("PIPELINE_ENRICH_THRESHOLD", "6"))
     if enrich_threshold > 0:
         print(f"\nEnrichment pass: filling concepts with < {enrich_threshold} facts...")
         final_grouped = enrich_thin_concepts(
             final_grouped, backend=canonicalize_backend, min_facts=enrich_threshold
         )
+
+    min_publishable = int(os.getenv("PIPELINE_MIN_PUBLISHABLE_FACTS", "2"))
+    if min_publishable > 1:
+        before = len(final_grouped)
+        final_grouped = {k: v for k, v in final_grouped.items() if len(v) >= min_publishable}
+        dropped = before - len(final_grouped)
+        if dropped:
+            print(f"  [prune] Dropped {dropped} stub concepts (< {min_publishable} facts after enrichment)")
 
     min_facts = int(os.getenv("PIPELINE_MIN_FACTS_PER_CONCEPT", "1"))
     pre_prune_count = len(final_grouped)

@@ -10,6 +10,7 @@ Includes:
   response healing) activated automatically when the base URL is OpenRouter
 """
 
+import random
 import time
 from typing import Any, Optional
 
@@ -87,6 +88,7 @@ class OpenAICompatBackend(LLMBackend):
         prompt: str,
         max_tokens: Optional[int] = None,
         json_schema: Optional[dict] = None,
+        context: str = "",
     ) -> str:
         """
         Send a prompt and return the model's text response.
@@ -139,56 +141,77 @@ class OpenAICompatBackend(LLMBackend):
                 },
             }
 
-        if extra_body:
-            kwargs["extra_body"] = extra_body
+        # Client-side model rotation: try the primary model, then each fallback in order.
+        # Each model gets its own retry budget with exponential backoff + jitter.
+        # Server-side OpenRouter fallbacks (extra_body["models"]) are NOT used —
+        # we rotate explicitly so failures are visible and identified per-model.
+        models_to_try = [self._config.model]
+        if self._is_openrouter and self._fallback_models:
+            models_to_try += self._fallback_models
 
-        # Retry loop with backoff for rate limits
+        # extra_body without the "models" key (we rotate client-side instead)
+        base_extra_body = {k: v for k, v in extra_body.items() if k != "models"}
+
+        tag = f"{self.label}" + (f" | {context}" if context else "")
+
         last_exc: Optional[Exception] = None
-        backoff = self._initial_backoff
 
-        for attempt in range(_MAX_RETRIES + 1):
-            try:
-                response = self._client.chat.completions.create(**kwargs)
+        for model_idx, model in enumerate(models_to_try):
+            kwargs["model"] = model
+            if base_extra_body:
+                kwargs["extra_body"] = base_extra_body
+            else:
+                kwargs.pop("extra_body", None)
 
-                message = response.choices[0].message if response.choices else None
-                content = message.content if message else None
+            backoff = self._initial_backoff
 
-                # Some OpenRouter models satisfy json_schema constraints via a
-                # tool-call under the hood, leaving content=None and putting the
-                # JSON in tool_calls[0].function.arguments.
-                if content is None and message is not None:
-                    tool_calls = getattr(message, "tool_calls", None)
-                    if tool_calls:
-                        content = tool_calls[0].function.arguments
+            for attempt in range(_MAX_RETRIES + 1):
+                try:
+                    response = self._client.chat.completions.create(**kwargs)
 
-                if content is None:
-                    raise LLMBackendError(
-                        f"[{self.label}] Empty response from {self._config.model}"
+                    message = response.choices[0].message if response.choices else None
+                    content = message.content if message else None
+
+                    # Some OpenRouter models satisfy json_schema constraints via a
+                    # tool-call under the hood, leaving content=None and putting the
+                    # JSON in tool_calls[0].function.arguments.
+                    if content is None and message is not None:
+                        tool_calls = getattr(message, "tool_calls", None)
+                        if tool_calls:
+                            content = tool_calls[0].function.arguments
+
+                    if content is None:
+                        raise LLMBackendError(
+                            f"[{self.label}] Empty response from {model}"
+                        )
+                    return content
+
+                except Exception as exc:
+                    last_exc = exc
+
+                    is_rate_limit = (
+                        "429" in str(exc)
+                        or "rate limit" in str(exc).lower()
+                        or "rate_limit" in str(exc).lower()
                     )
-                return content
+                    is_empty_response = "Empty response" in str(exc)
 
-            except Exception as exc:
-                last_exc = exc
+                    if not (is_rate_limit or is_empty_response) or attempt >= _MAX_RETRIES:
+                        break  # Stop retrying this model, try the next one
 
-                is_rate_limit = (
-                    "429" in str(exc)
-                    or "rate limit" in str(exc).lower()
-                    or "rate_limit" in str(exc).lower()
-                )
-                is_empty_response = "Empty response" in str(exc)
+                    wait_time = min(backoff, _MAX_BACKOFF_SECONDS) + random.uniform(0, 2.0)
+                    reason = "Rate limited" if is_rate_limit else "Empty response"
+                    print(f"  [{tag}] {reason} on {model} (attempt {attempt + 1}/{_MAX_RETRIES + 1}), "
+                          f"retrying in {round(wait_time)}s...")
+                    time.sleep(wait_time)
+                    backoff *= _BACKOFF_MULTIPLIER
 
-                if not (is_rate_limit or is_empty_response) or attempt >= _MAX_RETRIES:
-                    raise LLMBackendError(
-                        f"[{self.label}] Request to {self._config.base_url} failed: {exc}"
-                    ) from exc
+            # This model exhausted its retries — move to the next
+            if model_idx < len(models_to_try) - 1:
+                next_model = models_to_try[model_idx + 1]
+                print(f"  [{tag}] {model} failed, trying {next_model}...")
 
-                wait_time = min(backoff, _MAX_BACKOFF_SECONDS)
-                reason = "Rate limited" if is_rate_limit else "Empty response"
-                print(f"  [{self.label}] {reason} (attempt {attempt + 1}/{_MAX_RETRIES + 1}), "
-                      f"retrying in {wait_time:.0f}s...")
-                time.sleep(wait_time)
-                backoff *= _BACKOFF_MULTIPLIER
-
+        tried = ", ".join(models_to_try)
         raise LLMBackendError(
-            f"[{self.label}] Request failed after {_MAX_RETRIES + 1} attempts: {last_exc}"
+            f"[{self.label}] All models failed ({tried}). Last error: {last_exc}"
         )
