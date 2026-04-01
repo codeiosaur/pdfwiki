@@ -39,6 +39,7 @@ def build_related_concepts_by_chunks(
     concept_chunks: dict[str, set[str]],
     all_concepts: list[str],
     max_related: int = 8,
+    grouped: dict | None = None,
 ) -> list[str]:
     """
     Build related concepts by source-chunk co-occurrence (domain-agnostic).
@@ -47,13 +48,21 @@ def build_related_concepts_by_chunks(
     Falls back to token overlap when chunk data is sparse.
 
     max_related: maximum number of related concepts to return (default 8).
-    Callers that pass this argument explicitly are unaffected by the default change.
+    grouped: optional fact group map; when supplied, candidates with fewer than
+             2 facts are skipped (stubs should not appear as related concepts).
+
+    An IDF-style weight penalises concepts that appear across many chunks —
+    ubiquitous concepts score lower so more specific neighbours surface first.
     """
     my_chunks = concept_chunks.get(concept, set())
+    total_chunks = max(1, sum(len(v) for v in concept_chunks.values()))
     scored: list[tuple[float, int, str]] = []
 
     for candidate in all_concepts:
         if candidate == concept:
+            continue
+
+        if grouped is not None and len(grouped.get(candidate, [])) < 2:
             continue
 
         candidate_chunks = concept_chunks.get(candidate, set())
@@ -63,7 +72,9 @@ def build_related_concepts_by_chunks(
         )
 
         if shared_chunks > 0 or token_overlap > 0:
-            score = shared_chunks * 10 + token_overlap
+            candidate_chunk_count = len(candidate_chunks)
+            idf_weight = 1.0 / (1 + candidate_chunk_count / total_chunks)
+            score = (shared_chunks * 10 + token_overlap) * idf_weight
             scored.append((score, token_overlap, candidate))
 
     scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
