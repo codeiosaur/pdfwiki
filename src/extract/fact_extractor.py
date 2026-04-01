@@ -107,7 +107,8 @@ Output ONLY a JSON array of concept name strings:
 
     parsed = _parse_json_array(raw)
     if not isinstance(parsed, list):
-        print(f"  [pass1.5] Could not parse seed list from response")
+        preview = (raw[:200] + "...") if len(raw) > 200 else raw
+        print(f"  [pass1.5] Could not parse seed list from response: {preview!r}")
         return []
 
     seeds = [s.strip() for s in parsed if isinstance(s, str) and s.strip()]
@@ -118,17 +119,31 @@ Output ONLY a JSON array of concept name strings:
 # JSON parsing helpers
 # ---------------------------------------------------------------------------
 
+def _strip_markdown_fences(text: str) -> str:
+    """Remove leading/trailing markdown code fences (```json ... ```)."""
+    text = text.strip()
+    if text.startswith("```"):
+        # Strip opening fence line
+        newline = text.find("\n")
+        if newline != -1:
+            text = text[newline + 1:]
+    if text.endswith("```"):
+        text = text[: text.rfind("```")].rstrip()
+    return text.strip()
+
+
 def _parse_json_array(raw_content: str):
     """Parse a JSON array from raw model output."""
+    cleaned = _strip_markdown_fences(raw_content)
     try:
-        return json.loads(raw_content)
+        return json.loads(cleaned)
     except Exception:
-        start = raw_content.find("[")
-        end = raw_content.rfind("]")
+        start = cleaned.find("[")
+        end = cleaned.rfind("]")
         if start == -1 or end == -1 or end <= start:
             return None
         try:
-            return json.loads(raw_content[start : end + 1])
+            return json.loads(cleaned[start : end + 1])
         except Exception:
             return None
 
