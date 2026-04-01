@@ -27,7 +27,6 @@ and concept assignment via API.
 """
 
 from typing import Optional
-from urllib.parse import urlparse
 
 from backend.base import BackendConfig, LLMBackend, LLMBackendError
 from backend.config import get_env, get_env_secret, log_backend_config
@@ -40,16 +39,15 @@ _DEFAULT_BASE_URL = "http://localhost:11434/v1"
 _DEFAULT_MODEL = "llama3.1:8b"
 _DEFAULT_TEMPERATURE = 0.0
 
-# Local endpoints are memory-constrained; cloud endpoints have no such limit.
-_LOCAL_MAX_TOKENS = 900
-_CLOUD_MAX_TOKENS = 2048
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+# The old 900-token cap predated the batch_size=4 / 10-20-statements-per-chunk changes.
+# At 4 chunks × 15 statements × ~30 tokens each the response easily exceeds 900 tokens
+# and the JSON gets truncated.  Modern Ollama models handle 4096 tokens without issue.
+_DEFAULT_MAX_TOKENS = 4096
 
 
-def _default_max_tokens(base_url: str) -> int:
-    """Return 900 for local endpoints (localhost/127.0.0.1), 2048 for cloud."""
-    host = urlparse(base_url).hostname or ""
-    return _LOCAL_MAX_TOKENS if host in _LOCAL_HOSTS else _CLOUD_MAX_TOKENS
+def _default_max_tokens() -> int:
+    """Return the default max_tokens for all endpoints."""
+    return _DEFAULT_MAX_TOKENS
 
 
 # ── Provider registry ─────────────────────────────────────────────────
@@ -96,7 +94,7 @@ def _build_config(
     if api_key is None:
         api_key = _resolve_api_key(provider)
     if max_tokens is None:
-        max_tokens = _default_max_tokens(base_url)
+        max_tokens = _default_max_tokens()
 
     # Set default base_url for Anthropic if not explicitly provided
     if provider == "anthropic" and base_url == _DEFAULT_BASE_URL:

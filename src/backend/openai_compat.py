@@ -73,6 +73,11 @@ class OpenAICompatBackend(LLMBackend):
         # Use a shorter initial backoff for them; keep the longer default for OpenRouter.
         self._initial_backoff = _INITIAL_BACKOFF_SECONDS if self._is_openrouter else 1.0
 
+    @property
+    def is_openrouter(self) -> bool:
+        """True when this backend is pointed at OpenRouter."""
+        return self._is_openrouter
+
     def set_fallback_models(self, models: list[str]) -> None:
         """Set fallback model IDs for OpenRouter's model fallback feature."""
         self._fallback_models = list(models)
