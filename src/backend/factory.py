@@ -176,6 +176,14 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
     log_backend_config("pass1-extract", p1_provider, p1_base_url, p1_model, p1_config.api_key)
     pass1 = _create_backend_from_config(p1_config)
 
+    # Configure fallback models for Pass 1 (OpenRouter-specific)
+    p1_fallback_models_raw = get_env("PASS1_FALLBACK_MODELS", "")
+    if p1_fallback_models_raw.strip() and hasattr(pass1, "set_fallback_models"):
+        p1_fallback_models = [m.strip() for m in p1_fallback_models_raw.split(",") if m.strip()]
+        if p1_fallback_models:
+            pass1.set_fallback_models(p1_fallback_models)
+            print(f"  [pass1-extract] Fallback models: {p1_fallback_models}")
+
     # Pass 2: concept assignment (can be a different provider/model)
     p2_provider = get_env("PASS2_PROVIDER", global_provider)
     p2_base_url = get_env("PASS2_BASE_URL", global_base_url)

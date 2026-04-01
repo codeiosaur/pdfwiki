@@ -44,6 +44,7 @@ class AnthropicBackend(LLMBackend):
         prompt: str,
         max_tokens: Optional[int] = None,
         json_schema: Optional[dict] = None,
+        context: str = "",
     ) -> str:
         tokens = max_tokens if max_tokens is not None else self._config.max_tokens
 

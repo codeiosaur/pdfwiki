@@ -29,7 +29,7 @@ class _Backend:
         self._responses = list(responses)
         self.call_log: list[str] = []
 
-    def generate(self, prompt: str, max_tokens=None, json_schema=None) -> str:
+    def generate(self, prompt: str, max_tokens=None, json_schema=None, context: str = "") -> str:
         self.call_log.append(prompt)
         if self._responses:
             return self._responses.pop(0)

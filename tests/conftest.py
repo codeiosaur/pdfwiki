@@ -46,7 +46,7 @@ class MockBackend(LLMBackend):
         self.should_fail = should_fail
         self.call_log: list[dict] = []
 
-    def generate(self, prompt: str, max_tokens: Optional[int] = None, json_schema: Optional[dict] = None) -> str:
+    def generate(self, prompt: str, max_tokens: Optional[int] = None, json_schema: Optional[dict] = None, context: str = "") -> str:
         self.call_log.append({"prompt": prompt, "max_tokens": max_tokens, "json_schema": json_schema})
 
         if self.should_fail:

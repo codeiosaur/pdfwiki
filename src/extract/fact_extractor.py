@@ -91,6 +91,7 @@ Rules:
 - Each name must be meaningfully distinct
 - Do NOT use vague names like "Overview", "Impact", "Effects", "Goals", "Management"
 - Do NOT repeat the same concept under different phrasings
+- Prefer concepts the document teaches in depth over concepts it merely mentions as examples or context. A concept worth a page is one a reader must understand to master the subject — not one that appears only to illustrate a point.
 
 Statements:
 {statement_block}
@@ -194,6 +195,7 @@ Rules:
 - Skip worked examples with specific dollar amounts.
 - Skip instructions ("calculate...", "determine...", "prepare...").
 - Skip figure/table references and page numbers.
+- Skip statements where a concept is only referenced as a passing example or analogy. Extract statements that explain how or why something works, not merely that something exists.
 - Include the source_chunk_id from the [CHUNK_ID=...] marker.
 
 Allowed source_chunk_id values: {sorted(allowed_chunk_ids)}
@@ -227,18 +229,20 @@ Text:
             },
         }
 
+        batch_num = i // batch_size + 1
         try:
             raw_content = backend.generate(
                 prompt, json_schema=statement_extraction_schema,
+                context=f"batch {batch_num}",
             )
         except Exception as exc:
-            print(f"  [pass1] Batch {i//batch_size + 1}: LLM call failed: {exc}")
+            print(f"  [pass1] Batch {batch_num}: LLM call failed: {exc}")
             continue
 
         parsed = _parse_json_array(raw_content)
         if not isinstance(parsed, list):
             preview = (raw_content[:200] + "...") if len(raw_content) > 200 else raw_content
-            print(f"  [pass1] Batch {i//batch_size + 1}: Failed to parse JSON from response:")
+            print(f"  [pass1] Batch {batch_num}: Failed to parse JSON from response:")
             print(f"           {preview}")
             continue
 
@@ -365,19 +369,21 @@ Output ONLY a JSON array with one entry per statement:
             },
         }
 
+        batch_num = i // batch_size + 1
         try:
             raw_content = backend.generate(
                 prompt, json_schema=concept_assignment_schema,
+                context=f"batch {batch_num}",
             )
         except Exception as exc:
-            print(f"  [pass2] Batch {i//batch_size + 1}: LLM call failed: {exc}")
+            print(f"  [pass2] Batch {batch_num}: LLM call failed: {exc}")
             continue
 
         parsed = _parse_json_array(raw_content)
         if not isinstance(parsed, list):
             # Show a preview of what we got back so the user can diagnose
             preview = (raw_content[:200] + "...") if len(raw_content) > 200 else raw_content
-            print(f"  [pass2] Batch {i//batch_size + 1}: Failed to parse JSON from response:")
+            print(f"  [pass2] Batch {batch_num}: Failed to parse JSON from response:")
             print(f"           {preview}")
             continue
 
@@ -407,7 +413,7 @@ Output ONLY a JSON array with one entry per statement:
 
         if matched == 0 and parsed:
             # Model returned JSON but none of it mapped — show what we got
-            print(f"  [pass2] Batch {i//batch_size + 1}: Parsed {len(parsed)} items but 0 matched expected format.")
+            print(f"  [pass2] Batch {batch_num}: Parsed {len(parsed)} items but 0 matched expected format.")
             print(f"           First item: {parsed[0] if parsed else 'empty'}")
 
     return all_facts

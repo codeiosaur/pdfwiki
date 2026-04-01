@@ -64,6 +64,7 @@ class LLMBackend(ABC):
         prompt: str,
         max_tokens: Optional[int] = None,
         json_schema: Optional[dict] = None,
+        context: str = "",
     ) -> str:
         """
         Send a prompt and return the model's text response.
@@ -74,6 +75,7 @@ class LLMBackend(ABC):
             json_schema: Optional JSON schema dict to enforce structured output.
                          Provider support varies — OpenRouter enforces it
                          server-side, others use it as prompt guidance.
+            context:     Optional label for retry log messages (e.g. "batch 3").
 
         Returns:
             The model's response as a plain string.
