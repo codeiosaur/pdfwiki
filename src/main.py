@@ -223,8 +223,10 @@ def run_pipeline_two_pass(
 
     seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=seeds_file)
 
-    # H: use strict seed enforcement when Pass 2 is OpenRouter (enum schema enforced server-side)
-    use_strict = getattr(pass2_backend, "is_openrouter", False)
+    # H: use strict seed enforcement when Pass 2 is OpenRouter (enum schema enforced server-side).
+    # Only enable when seeds is non-empty — an empty enum would cause the model to output
+    # the literal placeholder text from the prompt (e.g. "Concept Name").
+    use_strict = getattr(pass2_backend, "is_openrouter", False) and bool(seeds)
     if use_strict:
         print(f"Pass 2: strict seed enforcement enabled (OpenRouter enum schema)")
 
@@ -324,19 +326,20 @@ def enrich_thin_concepts(
         if len(facts) >= min_facts:
             continue
 
-        existing = " ".join(f.content for f in facts[:3])
-        prompt = f"""The following concept has only a few facts extracted so far.
-Generate {min_facts - len(facts) + 2} additional distinct factual statements about "{concept}".
+        need = min_facts - len(facts) + 1
+        existing_block = "\n".join(f"- {f.content}" for f in facts)
+        prompt = f"""The following facts about "{concept}" were extracted from a textbook.
+Expand on them by writing {need} additional factual statements.
 
 Existing facts:
-{existing}
+{existing_block}
 
 Rules:
+- Each new statement must be a direct elaboration, consequence, or clarification
+  of the existing facts above.
+- Do NOT introduce information that is not already implied by the existing facts.
+- Do NOT repeat or rephrase the existing facts.
 - Each statement must be ONE complete, self-contained factual claim.
-- Include how it is calculated or measured (if applicable).
-- Include what it indicates when high or low (if applicable).
-- Include how it relates to or differs from similar concepts (if applicable).
-- Do NOT repeat the existing facts.
 - Write clear sentences a student could study from.
 
 Output ONLY a JSON array of strings:
@@ -697,7 +700,7 @@ if __name__ == "__main__":
     for concept, facts in sorted(final_grouped.items(), key=lambda x: -len(x[1])):
         print(f"  {concept} -> {len(facts)} facts")
 
-    enhanced_mode = os.getenv("ENHANCED_PAGE_MODE", "0").strip().lower() in {"1", "true", "yes"}
+    enhanced_mode = os.getenv("ENHANCED_PAGE_MODE", "1").strip().lower() in {"1", "true", "yes"}
     if enhanced_mode:
         pages = generate_pages_wiki(final_grouped)
         mode_label = "wiki"

@@ -21,12 +21,22 @@ def _split_words(text: str) -> List[str]:
 	return [token for token in re.split(r"\s+", text.strip()) if token]
 
 
+_SINGULARIZE_EXCEPTIONS = {
+    "analysis", "basis", "axis", "thesis", "crisis", "diagnosis",
+    "emphasis", "hypothesis", "oasis", "parenthesis", "synopsis",
+    "status", "apparatus", "campus", "virus", "census", "bonus",
+    "class", "grass", "glass", "mass", "pass", "brass",
+}
+
+
 def _singularize_last_word(words: List[str]) -> List[str]:
 	if not words:
 		return words
 
 	last = words[-1]
 	lower = last.lower()
+	if lower in _SINGULARIZE_EXCEPTIONS:
+		return words
 	if len(lower) > 3 and lower.endswith("s"):
 		if lower.endswith("ies") and len(lower) > 4:
 			words[-1] = last[:-3] + "y"
