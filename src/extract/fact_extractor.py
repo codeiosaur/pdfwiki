@@ -64,8 +64,8 @@ def load_seeds_from_file(path: str) -> List[str]:
 def derive_seed_concepts(
     statements: List[dict],
     backend: "LLMBackend",
-    target_count: int = 25,
-    sample_size: int = 60,
+    target_count: int = 40,
+    sample_size: int = 120,
 ) -> List[str]:
     """
     Pass 1.5: Derive seed concept names from extracted statements.
@@ -191,10 +191,11 @@ def extract_raw_statements_batched(
         prompt = f"""Extract factual statements from the text sections below.
 
 Rules:
-- Be thorough -- extract 8-15 statements per text section.
+- Be thorough -- extract 10-20 statements per text section.
 - Each statement must be ONE complete, self-contained factual claim.
 - Write clear sentences a student could study from.
 - Include definitions, relationships between concepts, rules, exceptions, and comparisons.
+- Include formula descriptions in plain English (e.g. 'Inventory turnover is calculated by dividing cost of goods sold by average inventory').
 - Skip worked examples with specific dollar amounts.
 - Skip instructions ("calculate...", "determine...", "prepare...").
 - Skip figure/table references and page numbers.
@@ -312,6 +313,7 @@ Rules:
 - Use standard textbook terminology for new names.
 - Do NOT use vague names like "Overview", "Impact", "Method", "Management".
 - Every statement must get exactly one concept name.
+- If a statement fits multiple concepts from the list, assign it to the more specific one.
 
 Statements:
 {numbered_statements}
