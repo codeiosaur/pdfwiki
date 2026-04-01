@@ -178,7 +178,7 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
 
     # Configure fallback models for Pass 1 (OpenRouter-specific)
     p1_fallback_models_raw = get_env("PASS1_FALLBACK_MODELS", "")
-    if p1_fallback_models_raw.strip() and hasattr(pass1, "set_fallback_models"):
+    if p1_fallback_models_raw.strip() and getattr(pass1, "is_openrouter", False):
         p1_fallback_models = [m.strip() for m in p1_fallback_models_raw.split(",") if m.strip()]
         if p1_fallback_models:
             pass1.set_fallback_models(p1_fallback_models)
@@ -197,7 +197,7 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
 
     # Configure fallback models for Pass 2 (OpenRouter-specific)
     fallback_models_raw = get_env("PASS2_FALLBACK_MODELS", "")
-    if fallback_models_raw.strip() and hasattr(pass2, "set_fallback_models"):
+    if fallback_models_raw.strip() and getattr(pass2, "is_openrouter", False):
         fallback_models = [m.strip() for m in fallback_models_raw.split(",") if m.strip()]
         if fallback_models:
             pass2.set_fallback_models(fallback_models)
