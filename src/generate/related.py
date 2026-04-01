@@ -38,13 +38,16 @@ def build_related_concepts_by_chunks(
     concept: str,
     concept_chunks: dict[str, set[str]],
     all_concepts: list[str],
-    max_related: int = 5,
+    max_related: int = 8,
 ) -> list[str]:
     """
     Build related concepts by source-chunk co-occurrence (domain-agnostic).
 
     Concepts extracted from the same text chunks are inherently related.
     Falls back to token overlap when chunk data is sparse.
+
+    max_related: maximum number of related concepts to return (default 8).
+    Callers that pass this argument explicitly are unaffected by the default change.
     """
     my_chunks = concept_chunks.get(concept, set())
     scored: list[tuple[float, int, str]] = []

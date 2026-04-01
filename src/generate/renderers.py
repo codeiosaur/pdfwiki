@@ -348,6 +348,16 @@ def generate_pages_wiki(
 
     all_display_titles = {normalize_page_title(c) for c in concept_names}
 
+    # Build alias map: acronym → display title of the concept that contains it.
+    # Allows inject_wikilinks() to link e.g. "FIFO" → [[First In First Out (FIFO)]].
+    _raw_acronyms = build_acronym_map(concept_names)
+    alias_map: dict[str, str] = {}
+    for _c in concept_names:
+        _d = normalize_page_title(_c)
+        for _lower, _upper in _raw_acronyms.items():
+            if _upper in _d:
+                alias_map.setdefault(_lower, _d)
+
     concept_chunks: dict[str, set[str]] = {}
     for concept, facts in grouped.items():
         concept_chunks[concept] = {
@@ -429,7 +439,7 @@ def generate_pages_wiki(
             if title_first and remainder_words and remainder_words[0] == title_first:
                 intro = remainder
 
-        intro = inject_wikilinks(intro, all_display_titles, display_title)
+        intro = inject_wikilinks(intro, all_display_titles, display_title, alias_map=alias_map)
 
         # --- Assemble page by concept type (no footnote suffixes) ---
         lines: list[str] = [f"# {display_title}", "", intro, "", "---"]
@@ -445,12 +455,12 @@ def generate_pages_wiki(
             if interpretations:
                 lines.extend(["", "---", "", "## What It Tells You", ""])
                 for item in interpretations:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title)}")
+                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
                 lines.append("")
             if details:
                 lines.extend(["", "---", "", "## Key Points", ""])
                 for item in details:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title)}")
+                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
                 lines.append("")
 
         elif concept_type in ("method", "system"):
@@ -459,7 +469,7 @@ def generate_pages_wiki(
             if details:
                 lines.extend(["", "---", "", "## How It Works", ""])
                 for item in details:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title)}")
+                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
                 lines.append("")
             if formulas:
                 lines.extend(["", "---", "", "## Formula", ""])
@@ -469,7 +479,7 @@ def generate_pages_wiki(
             if interpretations:
                 lines.extend(["", "---", "", "## Key Points", ""])
                 for item in interpretations:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title)}")
+                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
                 lines.append("")
 
         else:
@@ -479,13 +489,13 @@ def generate_pages_wiki(
             if combined_detail:
                 lines.extend(["", "---", "", "## Key Points", ""])
                 for item in combined_detail:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title)}")
+                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
                 lines.append("")
 
         if cautions:
             lines.extend(["", "---", "", "## Cautions", ""])
             for item in cautions:
-                lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title)}")
+                lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
             lines.append("")
 
         # Related Concepts (chunk co-occurrence)
