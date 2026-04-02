@@ -13,6 +13,7 @@ from generate.classify import (
     _has_template_markers,
     _is_low_signal_key_point,
 )
+from generate.page_layout import is_question_prompt
 
 
 # Concept-type classification keywords (domain-agnostic)
@@ -166,6 +167,8 @@ def promote_all_facts_to_content(
 
     for item in fact_contents:
         if _has_template_markers(item):
+            continue
+        if is_question_prompt(item):
             continue
         if _is_low_signal_key_point(item):
             continue

@@ -18,6 +18,7 @@ from postprocess import (
 )
 from transform.cluster import cluster_related_concepts
 from transform.canonicalize import canonicalize_concepts
+from transform.fact_hygiene import apply_fact_hygiene
 from transform.filter import filter_concepts
 from transform.grouping import group_facts_by_concept
 from transform.merge import merge_similar_concepts
@@ -72,6 +73,10 @@ def run_application(args) -> None:
     print(f"Extracted {len(all_facts)} facts")
     for fact in all_facts[:5]:
         print(f"{fact.id} | {fact.concept} | {fact.content} | chunk={fact.source_chunk_id}")
+
+    all_facts, dropped_noise = apply_fact_hygiene(all_facts)
+    if dropped_noise:
+        print(f"Dropped {dropped_noise} noisy pass-1/pass-2 artifacts before concept filtering")
 
     all_facts = filter_concepts(all_facts)
     print(f"After filtering: {len(all_facts)} valid concept facts")

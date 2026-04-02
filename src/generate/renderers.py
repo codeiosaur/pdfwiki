@@ -45,6 +45,7 @@ from generate.wiki_helpers import (
     inject_wikilinks,
     promote_all_facts_to_content,
 )
+from generate.page_layout import build_wiki_page_lines, is_question_prompt
 
 import generate.titles as _titles_module
 
@@ -90,7 +91,7 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
 
     for concept, facts in grouped.items():
         display_title = normalize_page_title(concept)
-        fact_contents = unique_fact_contents(facts)
+        fact_contents = [item for item in unique_fact_contents(facts) if not is_question_prompt(item)]
         text_to_sources = fact_sources(facts)
 
         definitions: list[str] = []
@@ -212,7 +213,7 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
 
     for concept, facts in grouped.items():
         display_title = normalize_page_title(concept)
-        fact_contents = unique_fact_contents(facts)
+        fact_contents = [item for item in unique_fact_contents(facts) if not is_question_prompt(item)]
         text_to_sources = fact_sources(facts)
 
         definitions: list[str] = []
@@ -440,7 +441,7 @@ def generate_pages_wiki(
 
     for concept, facts in grouped.items():
         display_title = normalize_page_title(concept)
-        fact_contents = unique_fact_contents(facts)
+        fact_contents = [item for item in unique_fact_contents(facts) if not is_question_prompt(item)]
         concept_type = classify_concept_type(concept, fact_contents)
 
         # --- Select definition ---
@@ -467,6 +468,7 @@ def generate_pages_wiki(
 
         formulas: list[str] = []
         interpretations: list[str] = []
+        examples: list[str] = []
         cautions: list[str] = []
         details: list[str] = []
 
@@ -476,6 +478,8 @@ def generate_pages_wiki(
                 formulas.append(item)
             elif sem == "interpretation":
                 interpretations.append(item)
+            elif sem == "example":
+                examples.append(item)
             elif sem == "caution":
                 cautions.append(item)
             else:
@@ -515,73 +519,11 @@ def generate_pages_wiki(
 
         intro = inject_wikilinks(intro, all_display_titles, display_title, alias_map=alias_map)
 
-        # --- Assemble page by concept type (no footnote suffixes) ---
-        lines: list[str] = [f"# {display_title}", "", intro, "", "---"]
-
-        if concept_type == "ratio":
-            lines.extend(["", "## Definition", ""])
-            lines.append(definition)
-            if formulas:
-                lines.extend(["", "---", "", "## Formula", ""])
-                for item in formulas:
-                    lines.append(f"```\n{item}\n```")
-                    lines.append("")
-            if interpretations:
-                lines.extend(["", "---", "", "## What It Tells You", ""])
-                for item in interpretations:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
-                lines.append("")
-            if details:
-                lines.extend(["", "---", "", "## Key Points", ""])
-                for item in details:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
-                lines.append("")
-
-        elif concept_type in ("method", "system"):
-            lines.extend(["", "## Definition", ""])
-            lines.append(definition)
-            if details:
-                lines.extend(["", "---", "", "## How It Works", ""])
-                for item in details:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
-                lines.append("")
-            if formulas:
-                lines.extend(["", "---", "", "## Formula", ""])
-                for item in formulas:
-                    lines.append(f"```\n{item}\n```")
-                    lines.append("")
-            if interpretations:
-                lines.extend(["", "---", "", "## Key Points", ""])
-                for item in interpretations:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
-                lines.append("")
-
-        else:
-            lines.extend(["", "## Definition", ""])
-            lines.append(definition)
-            combined_detail = details + interpretations
-            if combined_detail:
-                lines.extend(["", "---", "", "## Key Points", ""])
-                for item in combined_detail:
-                    lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
-                lines.append("")
-
-        if cautions:
-            lines.extend(["", "---", "", "## Cautions", ""])
-            for item in cautions:
-                lines.append(f"- {inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)}")
-            lines.append("")
-
         # Related Concepts (chunk co-occurrence with IDF penalty)
-        lines.extend(["", "---", "", "## Related Concepts"])
         related = build_related_concepts_by_chunks(
             concept, concept_chunks, concept_names, max_related=5, grouped=grouped
         )
-        if related:
-            for item in related:
-                lines.append(f"- [[{normalize_page_title(item)}]]")
-        else:
-            lines.append("- None")
+        related = [normalize_page_title(item) for item in related]
 
         # See Also — explicitly contrasting concepts (antonyms / siblings)
         see_also = sorted(
@@ -591,9 +533,7 @@ def generate_pages_wiki(
             and (has_antonym_conflict(concept, other) or is_sibling(concept, other))
         )
         if see_also:
-            lines.extend(["", "---", "", "## See Also"])
-            for item in see_also:
-                lines.append(f"- [[{item}]]")
+            see_also = [normalize_page_title(item) for item in see_also]
 
         # Source attribution — show filenames when available, hide UUIDs
         unique_sources = sorted({
@@ -602,10 +542,24 @@ def generate_pages_wiki(
         })
         has_real_sources = any(not looks_like_uuid(s) for s in unique_sources)
         if has_real_sources:
-            lines.extend(["", "---", "", "## Sources"])
-            for src in unique_sources:
-                if not looks_like_uuid(src):
-                    lines.append(f"- {src}")
+            sources = [src for src in unique_sources if not looks_like_uuid(src)]
+        else:
+            sources = []
+
+        lines = build_wiki_page_lines(
+            display_title=display_title,
+            intro=intro,
+            definition=definition,
+            concept_type=concept_type,
+            formulas=formulas,
+            interpretations=interpretations,
+            examples=examples,
+            cautions=cautions,
+            details=details,
+            related=related,
+            see_also=see_also,
+            sources=sources,
+        )
 
         pages[display_title] = "\n".join(lines)
 

@@ -69,6 +69,15 @@ ADJECTIVE_FIRST_STARTERS = {
 # Resource-type suffixes that indicate a website/platform reference rather than a concept.
 _RESOURCE_SUFFIXES = {"website", "portal", "page", "site", "platform", "tool"}
 
+# Internal pipeline/process labels that should never surface as user-facing concepts.
+_INTERNAL_CONCEPT_EXACT = {
+    "canonicalize concept names",
+    "source chunk id",
+    "chunk id",
+    "json array",
+    "existing facts",
+}
+
 
 def is_valid_concept(name: str) -> bool:
     """
@@ -152,6 +161,13 @@ def is_valid_concept(name: str) -> bool:
     # (e.g. "SEC Website", "Company Portal") — these are navigation references.
     last_word = words[-1].rstrip(".,!?;:").lower()
     if last_word in _RESOURCE_SUFFIXES:
+        return False
+
+    # Rule 11: Reject internal pipeline/process terms.
+    normalized = re.sub(r"\s+", " ", name.lower()).strip()
+    if normalized in _INTERNAL_CONCEPT_EXACT:
+        return False
+    if "canonicalize" in normalized and "concept" in normalized:
         return False
 
     return True
