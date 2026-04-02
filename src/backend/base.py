@@ -55,6 +55,14 @@ class LLMBackend(ABC):
         return self._config.label or self._config.provider
 
     @property
+    def provider(self) -> str:
+        return self._config.provider
+
+    @property
+    def base_url(self) -> str:
+        return self._config.base_url
+
+    @property
     def model(self) -> str:
         return self._config.model
 

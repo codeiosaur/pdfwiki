@@ -8,28 +8,41 @@ related concepts, plus footnote citation helpers for the legacy renderers.
 import re
 
 from extract.fact_extractor import Fact
+from transform.matching import has_antonym_conflict, is_sibling
 from generate.titles import concept_tokens, normalize_page_title
 
 
-def build_related_concepts(concepts: list[str], max_related: int = 3) -> dict[str, list[str]]:
+def build_related_concepts(
+    concepts: list[str],
+    max_related: int = 3,
+    exclude_siblings: bool = True,
+    exclude_antonyms: bool = True,
+) -> dict[str, list[str]]:
     """Build related concepts map using token overlap (legacy renderers)."""
     related: dict[str, list[str]] = {}
     token_map = {c: concept_tokens(c) for c in concepts}
 
     for concept in concepts:
         current = token_map[concept]
-        scored: list[tuple[int, int, str]] = []
+        scored: list[tuple[int, float, int, str]] = []
 
         for candidate in concepts:
             if candidate == concept:
                 continue
+            if exclude_siblings and is_sibling(concept, candidate):
+                continue
+            if exclude_antonyms and has_antonym_conflict(concept, candidate):
+                continue
             overlap = len(current.intersection(token_map[candidate]))
             if overlap == 0:
                 continue
-            scored.append((overlap, len(token_map[candidate]), candidate))
+            candidate_tokens = token_map[candidate]
+            union = len(current.union(candidate_tokens))
+            jaccard = overlap / union if union else 0.0
+            scored.append((overlap, jaccard, len(candidate_tokens), candidate))
 
-        scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
-        related[concept] = [name for _, _, name in scored[:max_related]]
+        scored.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]))
+        related[concept] = [name for _, _, _, name in scored[:max_related]]
 
     return related
 
@@ -40,6 +53,8 @@ def build_related_concepts_by_chunks(
     all_concepts: list[str],
     max_related: int = 8,
     grouped: dict | None = None,
+    exclude_siblings: bool = True,
+    exclude_antonyms: bool = True,
 ) -> list[str]:
     """
     Build related concepts by source-chunk co-occurrence (domain-agnostic).
@@ -60,6 +75,11 @@ def build_related_concepts_by_chunks(
 
     for candidate in all_concepts:
         if candidate == concept:
+            continue
+
+        if exclude_siblings and is_sibling(concept, candidate):
+            continue
+        if exclude_antonyms and has_antonym_conflict(concept, candidate):
             continue
 
         if grouped is not None and len(grouped.get(candidate, [])) < 2:

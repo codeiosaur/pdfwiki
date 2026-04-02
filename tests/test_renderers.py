@@ -5,7 +5,7 @@ import re
 import pytest
 
 from extract.fact_extractor import Fact
-from generate.renderers import generate_pages_wiki
+from generate.renderers import generate_pages, generate_pages_enhanced, generate_pages_wiki
 from generate.util import build_enhanced_intro
 
 
@@ -70,6 +70,70 @@ class TestGeneratePagesWikiDoubleTitle:
 
         # Prefix must be kept because the remainder doesn't start with "gross"
         assert "**Gross Profit**:" in page_text
+
+
+class TestStandardAndEnhancedWikilinks:
+    def test_standard_renderer_links_acronyms_in_lead(self):
+        grouped = {
+            "First In First Out": [
+                Fact(
+                    id="1",
+                    concept="First In First Out",
+                    content="FIFO is a cost flow assumption that affects Cost of Goods Sold.",
+                    source_chunk_id="chunk-1",
+                ),
+                Fact(
+                    id="2",
+                    concept="First In First Out",
+                    content="FIFO assigns the oldest costs first.",
+                    source_chunk_id="chunk-1",
+                ),
+            ],
+            "Cost of Goods Sold": [
+                Fact(
+                    id="3",
+                    concept="Cost of Goods Sold",
+                    content="Cost of Goods Sold is the expense recognized when inventory is sold.",
+                    source_chunk_id="chunk-1",
+                ),
+            ],
+        }
+
+        pages = generate_pages(grouped)
+        page_text = pages["First in First Out"]
+
+        assert "[[Cost of Goods Sold]]" in page_text
+
+    def test_enhanced_renderer_links_related_terms_in_sections(self):
+        grouped = {
+            "Gross Profit": [
+                Fact(
+                    id="1",
+                    concept="Gross Profit",
+                    content="Gross Profit is revenue minus the cost of goods sold.",
+                    source_chunk_id="chunk-1",
+                ),
+                Fact(
+                    id="2",
+                    concept="Gross Profit",
+                    content="Gross Profit indicates how much remains to cover operating expenses.",
+                    source_chunk_id="chunk-1",
+                ),
+            ],
+            "Cost of Goods Sold": [
+                Fact(
+                    id="3",
+                    concept="Cost of Goods Sold",
+                    content="Cost of Goods Sold is the expense recognized when inventory is sold.",
+                    source_chunk_id="chunk-1",
+                ),
+            ],
+        }
+
+        pages = generate_pages_enhanced(grouped)
+        page_text = pages["Gross Profit"]
+
+        assert "[[Cost of Goods Sold]]" in page_text
 
 
 class TestBuildEnhancedIntroSentenceCap:
