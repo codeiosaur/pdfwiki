@@ -54,6 +54,21 @@ def _init_acronyms(concept_names: list[str]) -> None:
     _titles_module.ACRONYM_CANONICAL = build_acronym_map(concept_names)
 
 
+def _build_link_maps(concept_names: list[str]) -> tuple[set[str], dict[str, str]]:
+    """Build display-title and acronym alias maps for wikilink injection."""
+    all_display_titles = {normalize_page_title(c) for c in concept_names}
+    raw_acronyms = build_acronym_map(concept_names)
+    alias_map: dict[str, str] = {}
+
+    for concept in concept_names:
+        display_title = normalize_page_title(concept)
+        for alias_lower, acronym in raw_acronyms.items():
+            if acronym in display_title:
+                alias_map.setdefault(alias_lower, display_title)
+
+    return all_display_titles, alias_map
+
+
 # ===================================================================
 # Standard renderer
 # ===================================================================
@@ -70,7 +85,8 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
     pages: dict[str, str] = {}
     concept_names = list(grouped.keys())
     _init_acronyms(concept_names)
-    related_map = build_related_concepts(concept_names)
+    all_display_titles, alias_map = _build_link_maps(concept_names)
+    related_map = build_related_concepts(concept_names, max_related=4)
 
     for concept, facts in grouped.items():
         display_title = normalize_page_title(concept)
@@ -109,12 +125,18 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
         ]
 
         lead = build_lead(definition, key_points)
+        lead = inject_wikilinks(lead, all_display_titles, display_title, alias_map=alias_map)
 
         hide_sources = all_sources_are_uuids(text_to_sources)
 
         if hide_sources:
-            definition_rendered = [definition]
-            key_point_rendered = key_points
+            definition_rendered = [
+                inject_wikilinks(definition, all_display_titles, display_title, alias_map=alias_map)
+            ]
+            key_point_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in key_points
+            ]
         else:
             citation_index = 1
             citation_map: dict[tuple[str, ...], int] = {}
@@ -125,6 +147,14 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
                 key_points, text_to_sources, citation_map, citation_index,
             )
             combined_notes = definition_notes + key_point_notes
+            definition_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in definition_rendered
+            ]
+            key_point_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in key_point_rendered
+            ]
 
         if definition == "No definition available." and not key_points and not include_empty_pages:
             continue
@@ -177,7 +207,8 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
     pages: dict[str, str] = {}
     concept_names = list(grouped.keys())
     _init_acronyms(concept_names)
-    related_map = build_related_concepts(concept_names)
+    all_display_titles, alias_map = _build_link_maps(concept_names)
+    related_map = build_related_concepts(concept_names, max_related=4)
 
     for concept, facts in grouped.items():
         display_title = normalize_page_title(concept)
@@ -238,16 +269,34 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
             continue
 
         intro = build_enhanced_intro(display_title, definition, interpretations, key_points)
+        intro = inject_wikilinks(intro, all_display_titles, display_title, alias_map=alias_map)
 
         hide_sources = all_sources_are_uuids(text_to_sources)
 
         if hide_sources:
-            definition_rendered = [definition]
-            formula_rendered = formulas
-            interpretation_rendered = interpretations
-            example_rendered = examples
-            caution_rendered = cautions
-            key_point_rendered = key_points
+            definition_rendered = [
+                inject_wikilinks(definition, all_display_titles, display_title, alias_map=alias_map)
+            ]
+            formula_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in formulas
+            ]
+            interpretation_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in interpretations
+            ]
+            example_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in examples
+            ]
+            caution_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in cautions
+            ]
+            key_point_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in key_points
+            ]
             combined_notes: list[str] = []
         else:
             citation_index = 1
@@ -270,6 +319,31 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
                 definition_notes + formula_notes + interpretation_notes
                 + example_notes + caution_notes + key_point_notes
             )
+
+            definition_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in definition_rendered
+            ]
+            formula_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in formula_rendered
+            ]
+            interpretation_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in interpretation_rendered
+            ]
+            example_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in example_rendered
+            ]
+            caution_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in caution_rendered
+            ]
+            key_point_rendered = [
+                inject_wikilinks(item, all_display_titles, display_title, alias_map=alias_map)
+                for item in key_point_rendered
+            ]
 
         lines: list[str] = [
             f"# {display_title}", "", intro, "", "---", "",
@@ -501,7 +575,7 @@ def generate_pages_wiki(
         # Related Concepts (chunk co-occurrence with IDF penalty)
         lines.extend(["", "---", "", "## Related Concepts"])
         related = build_related_concepts_by_chunks(
-            concept, concept_chunks, concept_names, grouped=grouped
+            concept, concept_chunks, concept_names, max_related=5, grouped=grouped
         )
         if related:
             for item in related:

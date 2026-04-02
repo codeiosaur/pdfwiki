@@ -108,6 +108,17 @@ class TestBuildRelatedConcepts:
             # "Inventory Turnover" shares 2 tokens, "Inventory Fraud" shares 1
             assert related[0] == "Inventory Turnover"
 
+    def test_excludes_siblings_by_default(self):
+        concepts = ["Inventory Fraud", "Inventory Shrinkage", "Inventory Valuation"]
+        result = build_related_concepts(concepts)
+        assert "Inventory Shrinkage" not in result.get("Inventory Fraud", [])
+        assert "Inventory Valuation" not in result.get("Inventory Fraud", [])
+
+    def test_excludes_antonyms_by_default(self):
+        concepts = ["First In First Out", "Last In First Out", "Cost of Goods Sold"]
+        result = build_related_concepts(concepts)
+        assert "Last In First Out" not in result.get("First In First Out", [])
+
 
 class TestBuildRelatedConceptsByChunks:
     def test_shared_chunks_weighted_higher(self):
@@ -158,6 +169,37 @@ class TestBuildRelatedConceptsByChunks:
             "FIFO", concept_chunks, ["FIFO", "Balance Sheet"]
         )
         assert "Balance Sheet" not in result
+
+    def test_excludes_siblings_and_antonyms_by_default(self):
+        concept_chunks = {
+            "First In First Out": {"chunk-1", "chunk-2"},
+            "Last In First Out": {"chunk-1"},
+            "Inventory Fraud": {"chunk-2"},
+            "Inventory Shrinkage": {"chunk-2"},
+        }
+        grouped = {
+            "First In First Out": [make_fact("FIFO", "A", "chunk-1"), make_fact("FIFO", "B", "chunk-2")],
+            "Last In First Out": [make_fact("LIFO", "A", "chunk-1"), make_fact("LIFO", "B", "chunk-1")],
+            "Inventory Fraud": [make_fact("Inventory Fraud", "A", "chunk-2"), make_fact("Inventory Fraud", "B", "chunk-2")],
+            "Inventory Shrinkage": [make_fact("Inventory Shrinkage", "A", "chunk-2"), make_fact("Inventory Shrinkage", "B", "chunk-2")],
+        }
+
+        result = build_related_concepts_by_chunks(
+            "First In First Out",
+            concept_chunks,
+            list(concept_chunks.keys()),
+            grouped=grouped,
+        )
+
+        assert "Last In First Out" not in result
+
+        fraud_related = build_related_concepts_by_chunks(
+            "Inventory Fraud",
+            concept_chunks,
+            list(concept_chunks.keys()),
+            grouped=grouped,
+        )
+        assert "Inventory Shrinkage" not in fraud_related
 
 
 class TestCitationSuffixes:
