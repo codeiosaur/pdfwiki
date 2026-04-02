@@ -136,6 +136,69 @@ class TestStandardAndEnhancedWikilinks:
         assert "[[Cost of Goods Sold]]" in page_text
 
 
+class TestWikiArticleStructure:
+    def test_wiki_renderer_filters_questions_and_keeps_article_sections(self):
+        grouped = {
+            "Inventory Valuation": [
+                Fact(
+                    id="1",
+                    concept="Inventory Valuation",
+                    content="Inventory valuation is the method used to assign a value to ending inventory.",
+                    source_chunk_id="chunk-1",
+                ),
+                Fact(
+                    id="2",
+                    concept="Inventory Valuation",
+                    content="The lower-of-cost-or-market rule can reduce reported inventory value when market value falls.",
+                    source_chunk_id="chunk-1",
+                ),
+                Fact(
+                    id="3",
+                    concept="Inventory Valuation",
+                    content="When should a company use specific identification for inventory valuation?",
+                    source_chunk_id="chunk-1",
+                ),
+                Fact(
+                    id="4",
+                    concept="Inventory Valuation",
+                    content="For example, a retailer may use FIFO when prices are rising.",
+                    source_chunk_id="chunk-1",
+                ),
+                Fact(
+                    id="5",
+                    concept="Inventory Valuation",
+                    content="However, the method can be misleading when values fluctuate sharply.",
+                    source_chunk_id="chunk-1",
+                ),
+            ],
+            "Cost of Goods Sold": [
+                Fact(
+                    id="6",
+                    concept="Cost of Goods Sold",
+                    content="Cost of Goods Sold is the expense recognized when inventory is sold.",
+                    source_chunk_id="chunk-1",
+                ),
+                Fact(
+                    id="7",
+                    concept="Cost of Goods Sold",
+                    content="Cost of Goods Sold rises when the cost flow assumption changes reported costs.",
+                    source_chunk_id="chunk-1",
+                ),
+            ],
+        }
+
+        pages = generate_pages_wiki(grouped)
+        page_text = pages["Inventory Valuation"]
+
+        assert "?" not in page_text
+        assert "## Definition" in page_text
+        assert "## Key Takeaways" in page_text or "## How It Works" in page_text
+        assert "## Example" in page_text
+        assert "## Cautions" in page_text
+        assert "## Related Concepts" in page_text
+        assert "[[Cost of Goods Sold]]" in page_text
+
+
 class TestBuildEnhancedIntroSentenceCap:
     """The combined primary + secondary text must not exceed 2 sentences."""
 

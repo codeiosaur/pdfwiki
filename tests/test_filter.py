@@ -48,6 +48,9 @@ from transform.filter import is_valid_concept
     # Reject: U S / U K patterns
     ("U S Encryption", False),
     ("U K Standards", False),
+
+    # Reject: internal pipeline concept leakage
+    ("Canonicalize Concept Names", False),
 ])
 def test_is_valid_concept(concept, expected):
     assert is_valid_concept(concept) == expected
