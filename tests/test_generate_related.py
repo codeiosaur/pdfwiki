@@ -119,6 +119,16 @@ class TestBuildRelatedConcepts:
         result = build_related_concepts(concepts)
         assert "Last In First Out" not in result.get("First In First Out", [])
 
+    def test_excludes_internal_pipeline_concepts(self):
+        concepts = [
+            "Inventory Turnover Ratio",
+            "Canonicalize Concept Names",
+            "Inventory Management",
+        ]
+        result = build_related_concepts(concepts)
+        assert "Canonicalize Concept Names" not in result
+        assert "Canonicalize Concept Names" not in result.get("Inventory Turnover Ratio", [])
+
 
 class TestBuildRelatedConceptsByChunks:
     def test_shared_chunks_weighted_higher(self):
@@ -200,6 +210,26 @@ class TestBuildRelatedConceptsByChunks:
             grouped=grouped,
         )
         assert "Inventory Shrinkage" not in fraud_related
+
+    def test_chunk_related_excludes_internal_concepts(self):
+        concept_chunks = {
+            "Inventory Turnover Ratio": {"chunk-1"},
+            "Canonicalize Concept Names": {"chunk-1"},
+            "Inventory Management": {"chunk-1"},
+        }
+        grouped = {
+            "Inventory Turnover Ratio": [make_fact("Inventory Turnover Ratio", "A", "chunk-1")],
+            "Canonicalize Concept Names": [make_fact("Canonicalize Concept Names", "B", "chunk-1")],
+            "Inventory Management": [make_fact("Inventory Management", "C", "chunk-1")],
+        }
+
+        result = build_related_concepts_by_chunks(
+            "Inventory Turnover Ratio",
+            concept_chunks,
+            list(concept_chunks.keys()),
+            grouped=grouped,
+        )
+        assert "Canonicalize Concept Names" not in result
 
 
 class TestCitationSuffixes:

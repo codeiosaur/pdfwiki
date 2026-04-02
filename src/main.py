@@ -19,7 +19,7 @@ from postprocess import (
 from transform.cluster import cluster_related_concepts
 from transform.canonicalize import canonicalize_concepts
 from transform.fact_hygiene import apply_fact_hygiene
-from transform.filter import filter_concepts
+from transform.filter import filter_concepts, filter_publishable_grouped_concepts
 from transform.grouping import group_facts_by_concept
 from transform.merge import merge_similar_concepts
 from transform.normalize import normalize_group_keys
@@ -115,6 +115,12 @@ def run_application(args) -> None:
     pruned_count = max(0, pre_prune_count - len(final_grouped))
     if pruned_count:
         print(f"Pruned {pruned_count} low-signal concepts (< {min_facts} facts)")
+
+    before_publish = len(final_grouped)
+    final_grouped = filter_publishable_grouped_concepts(final_grouped)
+    publish_pruned = before_publish - len(final_grouped)
+    if publish_pruned:
+        print(f"Pruned {publish_pruned} non-publishable concepts before rendering")
 
     print("\n=== CONCEPT GROUPS ===")
     for concept, facts in sorted(final_grouped.items(), key=lambda x: -len(x[1])):

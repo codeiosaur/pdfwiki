@@ -6,15 +6,6 @@ from extract.fact_extractor import Fact
 
 GENERIC_SUFFIXES = {"method", "system", "approach", "model", "technique", "process"}
 LEADING_FILLERS = ("number of ", "type of ", "kind of ")
-CANONICAL_PHRASE_RULES = [
-	(r"\bfirst\s+in\s+first\s+out\b|\bfifo\b", "First In First Out"),
-	(r"\blast\s+in\s+first\s+out\b|\blifo\b", "Last In First Out"),
-	(r"\blower\s+of\s+cost\s+or\s+market\b|\blcm\b", "Lower of Cost or Market"),
-	(r"\bcost\s+of\s+goods\s+sold\b|\bcogs\b", "Cost of Goods Sold"),
-	(r"\bdays\s+sales\s+in\s+inventory\b|\bdsi\b", "Days Sales in Inventory (DSI)"),
-	(r"\belectronic\s+product\s+code\b|\bepcs?\b", "EPC"),
-	(r"\bupc\s*bar\s*code\b|\bupc\s+barcode\b", "UPC Barcode"),
-]
 
 
 def _split_words(text: str) -> List[str]:
@@ -112,13 +103,6 @@ def normalize_concept_rules(concept: str) -> str:
 	# Rule 3: punctuation normalization.
 	text = text.replace("-", " ")
 	text = re.sub(r"\s+", " ", text).strip()
-
-	# Rule 3.5: deterministic canonical phrase mapping for common variants.
-	lower_text = text.lower()
-	for pattern, replacement in CANONICAL_PHRASE_RULES:
-		if re.search(pattern, lower_text):
-			text = replacement
-			break
 
 	# Rule 6: remove leading filler phrases.
 	lowered = text.lower()

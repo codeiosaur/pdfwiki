@@ -59,6 +59,14 @@ class TestDedupeExactTokenKeys:
         total = sum(len(v) for v in result.values())
         assert total == 5
 
+    def test_compact_key_variants_merged(self):
+        grouped = {
+            "Inventory Turnover Ratio": make_facts("Inventory Turnover Ratio", 2),
+            "Inventoryturnover Ratio": make_facts("Inventoryturnover Ratio", 1),
+        }
+        result = _dedupe_exact_token_keys(grouped)
+        assert len(result) == 1
+
 
 class TestMergeSimilarConcepts:
     def test_plural_singular_merged(self):
@@ -110,3 +118,31 @@ class TestMergeSimilarConcepts:
         }
         result = merge_similar_concepts(grouped)
         assert len(result) == 3
+
+    def test_metric_suffix_variant_merged(self):
+        grouped = {
+            "Inventory Turnover": make_facts("Inventory Turnover", 2),
+            "Inventory Turnover Ratio": make_facts("Inventory Turnover Ratio", 1),
+        }
+        result = merge_similar_concepts(grouped)
+        assert len(result) == 1
+        total = sum(len(v) for v in result.values())
+        assert total == 3
+
+    def test_tie_prefers_more_specific_surface_form(self):
+        grouped = {
+            "Inventory Turnover": make_facts("Inventory Turnover", 2),
+            "Inventory Turnover Ratio": make_facts("Inventory Turnover Ratio", 2),
+        }
+        result = merge_similar_concepts(grouped)
+        assert len(result) == 1
+        assert "Inventory Turnover Ratio" in result
+
+    def test_metric_specific_label_wins_even_with_fewer_facts(self):
+        grouped = {
+            "Inventory Turnover": make_facts("Inventory Turnover", 4),
+            "Inventory Turnover Ratio": make_facts("Inventory Turnover Ratio", 1),
+        }
+        result = merge_similar_concepts(grouped)
+        assert len(result) == 1
+        assert "Inventory Turnover Ratio" in result

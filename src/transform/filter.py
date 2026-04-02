@@ -184,3 +184,12 @@ def filter_concepts(facts: List) -> List:
         Filtered list of facts with only valid concepts
     """
     return [fact for fact in facts if is_valid_concept(fact.concept)]
+
+
+def filter_publishable_grouped_concepts(grouped: dict[str, list]) -> dict[str, list]:
+    """Remove grouped concept pages that should never be published."""
+    return {
+        concept: facts
+        for concept, facts in grouped.items()
+        if is_valid_concept(concept)
+    }
