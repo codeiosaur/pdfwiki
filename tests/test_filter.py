@@ -3,6 +3,7 @@
 import pytest
 
 from transform.filter import is_valid_concept
+from transform.filter import filter_publishable_grouped_concepts
 
 
 @pytest.mark.parametrize("concept, expected", [
@@ -51,6 +52,21 @@ from transform.filter import is_valid_concept
 
     # Reject: internal pipeline concept leakage
     ("Canonicalize Concept Names", False),
+    ("Canonicalize Concept Name", False),
 ])
 def test_is_valid_concept(concept, expected):
     assert is_valid_concept(concept) == expected
+
+
+def test_filter_publishable_grouped_concepts_removes_internal_pages():
+    grouped = {
+        "Inventory Turnover Ratio": [],
+        "Canonicalize Concept Names": [],
+        "Balance Sheet": [],
+    }
+
+    result = filter_publishable_grouped_concepts(grouped)
+
+    assert "Canonicalize Concept Names" not in result
+    assert "Inventory Turnover Ratio" in result
+    assert "Balance Sheet" in result

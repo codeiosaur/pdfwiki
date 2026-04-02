@@ -164,6 +164,8 @@ def promote_all_facts_to_content(
 
     definition_norm = _normalize_text_for_compare(definition)
     promoted: list[str] = []
+    seen_normalized: set[str] = set()
+    template_counts: dict[str, int] = {}
 
     for item in fact_contents:
         if _has_template_markers(item):
@@ -177,6 +179,20 @@ def promote_all_facts_to_content(
         base_class = classify_fact(item)
         if base_class == "instruction":
             continue
+
+        normalized = _normalize_text_for_compare(item)
+        if normalized in seen_normalized:
+            continue
+
+        # Collapse repetitive numeric variants that share the same sentence template.
+        # Keep at most two examples so method comparisons can still survive.
+        template = re.sub(r"\b\$?\d[\d,]*(?:\.\d+)?%?\b", "<num>", normalized)
+        template_count = template_counts.get(template, 0)
+        if template_count >= 2:
+            continue
+
+        seen_normalized.add(normalized)
+        template_counts[template] = template_count + 1
         promoted.append(item)
 
     return promoted

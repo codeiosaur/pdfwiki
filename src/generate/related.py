@@ -12,6 +12,19 @@ from transform.matching import has_antonym_conflict, is_sibling
 from generate.titles import concept_tokens, normalize_page_title
 
 
+def _is_internal_concept_name(concept: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (concept or "").lower()).strip()
+    if not normalized:
+        return True
+    if normalized == "canonicalize concept names":
+        return True
+    if "canonicalize" in normalized and "concept" in normalized:
+        return True
+    if normalized in {"source chunk id", "chunk id", "json array", "existing facts"}:
+        return True
+    return False
+
+
 def build_related_concepts(
     concepts: list[str],
     max_related: int = 3,
@@ -20,13 +33,14 @@ def build_related_concepts(
 ) -> dict[str, list[str]]:
     """Build related concepts map using token overlap (legacy renderers)."""
     related: dict[str, list[str]] = {}
-    token_map = {c: concept_tokens(c) for c in concepts}
+    filtered_concepts = [c for c in concepts if not _is_internal_concept_name(c)]
+    token_map = {c: concept_tokens(c) for c in filtered_concepts}
 
-    for concept in concepts:
+    for concept in filtered_concepts:
         current = token_map[concept]
         scored: list[tuple[int, float, int, str]] = []
 
-        for candidate in concepts:
+        for candidate in filtered_concepts:
             if candidate == concept:
                 continue
             if exclude_siblings and is_sibling(concept, candidate):
@@ -73,8 +87,13 @@ def build_related_concepts_by_chunks(
     total_chunks = max(1, sum(len(v) for v in concept_chunks.values()))
     scored: list[tuple[float, int, str]] = []
 
+    if _is_internal_concept_name(concept):
+        return []
+
     for candidate in all_concepts:
         if candidate == concept:
+            continue
+        if _is_internal_concept_name(candidate):
             continue
 
         if exclude_siblings and is_sibling(concept, candidate):

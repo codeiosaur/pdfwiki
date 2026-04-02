@@ -7,23 +7,12 @@ from extract.fact_extractor import Fact
 
 
 class TestNormalizeConceptRules:
-    # Canonical phrase mapping
-    def test_fifo_abbreviation(self):
-        assert normalize_concept_rules("fifo") == "First In First Out"
+    # Generic title casing / acronym handling
+    def test_single_token_title_cased(self):
+        assert normalize_concept_rules("fifo") == "Fifo"
 
-    def test_lifo_abbreviation(self):
-        assert normalize_concept_rules("lifo") == "Last In First Out"
-
-    def test_cogs_abbreviation(self):
-        # Canonical phrase fires, then _title_case_preserve_acronyms capitalizes all words
-        assert normalize_concept_rules("cogs") == "Cost Of Goods Sold"
-
-    def test_lcm_abbreviation(self):
-        assert normalize_concept_rules("lcm") == "Lower Of Cost Or Market"
-
-    def test_dsi_abbreviation(self):
-        result = normalize_concept_rules("dsi")
-        assert "Days Sales" in result
+    def test_lowercase_multiword_title_cased(self):
+        assert normalize_concept_rules("balance sheet") == "Balance Sheet"
 
     # Title case (note: "system" is a generic suffix and gets stripped)
     def test_title_case_applied(self):
@@ -106,16 +95,13 @@ class TestNormalizeGroupKeys:
     def _make_fact(self, concept, content="fact"):
         return Fact(id="x", concept=concept, content=content, source_chunk_id="c1")
 
-    def test_merges_normalized_duplicates(self):
+    def test_keeps_case_variants_separate_without_domain_mapping(self):
         grouped = {
             "fifo": [self._make_fact("fifo", "oldest cost")],
             "FIFO": [self._make_fact("FIFO", "inventory method")],
         }
         result = normalize_group_keys(grouped)
-        # Both normalize to "First In First Out" — should merge
-        assert len(result) == 1
-        combined = list(result.values())[0]
-        assert len(combined) == 2
+        assert len(result) == 2
 
     def test_preserves_distinct_concepts(self):
         grouped = {

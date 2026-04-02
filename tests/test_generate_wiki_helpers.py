@@ -207,3 +207,22 @@ class TestPromoteAllFactsToContent:
     def test_empty_fact_list(self):
         result = promote_all_facts_to_content([], "definition")
         assert result == []
+
+    def test_dedupes_exact_normalized_duplicates(self):
+        facts = [
+            "Inventory turnover ratio measures how quickly inventory is sold.",
+            "Inventory turnover ratio measures how quickly inventory is sold.",
+            "Inventory turnover ratio measures how quickly inventory is sold!",
+        ]
+        result = promote_all_facts_to_content(facts, "Definition sentence.")
+        assert len(result) == 1
+
+    def test_limits_numeric_template_repetition(self):
+        facts = [
+            "Subtracting ending inventory gives cost of goods sold of $7,260.",
+            "Subtracting ending inventory gives cost of goods sold of $7,200.",
+            "Subtracting ending inventory gives cost of goods sold of $9,360.",
+            "Subtracting ending inventory gives cost of goods sold of $8,283.",
+        ]
+        result = promote_all_facts_to_content(facts, "Definition sentence.")
+        assert len(result) == 2
