@@ -201,6 +201,39 @@ class TestWikiArticleStructure:
         assert "[[Cost of Goods Sold]]" in page_text
 
 
+class TestParallelRendererEquivalence:
+    """Parallel rendering must produce identical output to sequential rendering."""
+
+    @staticmethod
+    def _make_grouped() -> dict:
+        concepts = ["Gross Profit", "Cost of Goods Sold", "Inventory Valuation", "FIFO", "LIFO"]
+        grouped = {}
+        for i, concept in enumerate(concepts):
+            grouped[concept] = [
+                Fact(id=f"{i}-1", concept=concept,
+                     content=f"{concept} is a key accounting concept used in financial reporting.",
+                     source_chunk_id="chunk-1"),
+                Fact(id=f"{i}-2", concept=concept,
+                     content=f"{concept} affects the balance sheet and income statement.",
+                     source_chunk_id="chunk-1"),
+            ]
+        return grouped
+
+    def test_wiki_parallel_matches_sequential(self):
+        grouped = self._make_grouped()
+        sequential = generate_pages_wiki(grouped, workers=1)
+        parallel = generate_pages_wiki(grouped, workers=4)
+        assert set(sequential.keys()) == set(parallel.keys())
+        for key in sequential:
+            assert sequential[key] == parallel[key], f"Mismatch for concept: {key}"
+
+    def test_wiki_parallel_output_order_is_deterministic(self):
+        grouped = self._make_grouped()
+        run1 = list(generate_pages_wiki(grouped, workers=4).keys())
+        run2 = list(generate_pages_wiki(grouped, workers=4).keys())
+        assert run1 == run2
+
+
 class TestBuildEnhancedIntroSentenceCap:
     """The combined primary + secondary text must not exceed 2 sentences."""
 
