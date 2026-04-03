@@ -39,6 +39,33 @@ class TestClassifyFact:
     def test_example_high_numeric_density(self):
         assert classify_fact("Units: 100 at $5.00, 200 at $6.50, 50 at $7.25") == "example"
 
+    def test_example_resulting_from_phrase(self):
+        assert classify_fact("The gross margin, resulting from the weighted-average perpetual cost allocations, was $7,253.") == "example"
+
+    def test_example_balance_phrase(self):
+        assert classify_fact("Beginning merchandise inventory had a balance of $3,150 before adjustment.") == "example"
+
+    def test_example_subtracting_leaves_phrase(self):
+        assert classify_fact("Subtracting this ending inventory from the $16,155 total of goods available for sale leaves $7,200 in cost of goods sold this period.") == "example"
+
+    def test_example_ending_inventory_value_phrase(self):
+        assert classify_fact("The weighted-average perpetual ending inventory value is $8,902 (rounded).") == "example"
+
+    def test_example_company_percentage_year_phrase(self):
+        assert classify_fact("Inventory is a significant portion of a company's assets, with Walmart's inventory being 70% of its current assets and 21% of its total assets in 2018.") == "example"
+
+    def test_example_year_over_year_case_study_phrase(self):
+        assert classify_fact("The result for the company indicates that inventory turned 1.19 times in year 1 and 0.84 times in year 2.") == "example"
+
+    def test_example_year_over_year_trend_phrase(self):
+        assert classify_fact("The fact that the year 2 inventory turnover ratio is lower than the year 1 ratio is not a positive trend.") == "example"
+
+    def test_example_after_two_sales_phrase(self):
+        assert classify_fact("After two sales, there remained 75 units of inventory that had cost $27 each in the FIFO method.") == "example"
+
+    def test_example_remaining_units_costing_phrase(self):
+        assert classify_fact("After two sales, there remained 30 units of beginning inventory that had cost $21 each and 45 units of the goods purchased for $27 each.") == "example"
+
     def test_key_point_default(self):
         # Avoid instruction verbs like "provides" — use neutral statement
         assert classify_fact("The perpetual system updates records after each transaction.") == "key_point"
@@ -133,6 +160,15 @@ class TestSelectDefinition:
         result = select_definition("FIFO", facts)
         assert result is not None
         assert "$" not in result or "FIFO is" in result
+
+    def test_select_definition_filters_example_candidates(self):
+        facts = [
+            "The gross margin, resulting from the weighted-average perpetual cost allocations, was $7,253.",
+            "Gross margin is the difference between net sales and cost of goods sold.",
+        ]
+        result = select_definition("Gross Margin", facts)
+        assert result is not None
+        assert "gross margin is" in result.lower()
 
 
 class TestIsLowSignalKeyPoint:

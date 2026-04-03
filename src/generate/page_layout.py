@@ -45,6 +45,7 @@ def build_wiki_page_lines(
     related: list[str],
     see_also: list[str],
     sources: list[str],
+    include_examples: bool = False,
 ) -> list[str]:
     """Build a Wikipedia-like page that still reads like a study note."""
     lines: list[str] = [f"# {display_title}", "", intro, "", "---", "", "## Definition", definition]
@@ -63,7 +64,8 @@ def build_wiki_page_lines(
     else:
         lines.extend(bullet_section("Key Takeaways", details + interpretations))
 
-    lines.extend(bullet_section("Example", examples))
+    if include_examples:
+        lines.extend(bullet_section("Example", examples))
     lines.extend(bullet_section("Cautions", cautions))
 
     lines.extend(["", "---", "", "## Related Concepts"])

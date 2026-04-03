@@ -6,6 +6,7 @@ from extract.fact_extractor import Fact
 
 GENERIC_SUFFIXES = {"method", "system", "approach", "model", "technique", "process"}
 LEADING_FILLERS = ("number of ", "type of ", "kind of ")
+MERGE_KEY_STOPWORDS = {"a", "an", "the", "of", "in", "for", "to"}
 
 
 def _split_words(text: str) -> List[str]:
@@ -138,8 +139,29 @@ def normalize_group_keys(grouped: dict[str, List[Fact]]) -> dict[str, List[Fact]
 	Normalize grouped concept keys and merge groups with equal normalized keys.
 	"""
 	normalized_grouped: dict[str, List[Fact]] = {}
+	merge_key_to_title: dict[str, str] = {}
+
+	def _merge_key(title: str) -> str:
+		# Merge-key is preposition/article-insensitive so superficial wording
+		# variants (e.g. "X of Y" vs "X in Y") can collapse.
+		tokens = [
+			t.lower() for t in re.findall(r"[A-Za-z0-9]+", title)
+			if t.lower() not in MERGE_KEY_STOPWORDS
+		]
+		return " ".join(tokens)
+
 	for concept, facts in grouped.items():
 		normalized = normalize_concept_rules(concept)
 		target = normalized if normalized else concept
+		key = _merge_key(target)
+		if key:
+			existing = merge_key_to_title.get(key)
+			if existing is None:
+				merge_key_to_title[key] = target
+			else:
+				# Keep the more descriptive canonical label.
+				if len(target) > len(existing):
+					merge_key_to_title[key] = target
+			target = merge_key_to_title[key]
 		normalized_grouped.setdefault(target, []).extend(facts)
 	return normalized_grouped

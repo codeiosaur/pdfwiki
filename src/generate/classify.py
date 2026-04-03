@@ -56,6 +56,47 @@ SEMANTIC_CAUTION_MARKERS = {
     "can be", "may be", "warning",
 }
 
+# Strong markers that almost always indicate a worked example or worksheet language
+WORKED_EXAMPLE_STRONG_MARKERS = {
+    "resulting from",
+    "requiring an entry",
+    "requires an entry",
+    "remains constant across all scenarios",
+    "independent of the final",
+    "at period end should",
+    "must always equal",
+}
+
+# Secondary markers that typically indicate worked examples when paired with numeric
+# content (we keep these separate to avoid over-matching on ordinary prose).
+WORKED_EXAMPLE_NUMERIC_MARKERS = {
+    "had a balance of",
+    "balance of",
+    "amount of",
+    "total amount",
+    "subtracting this ending inventory from",
+    "ending inventory value is",
+    "perpetual ending inventory value",
+    "credit entry",
+    "debit entry",
+    "recorded as",
+    "was recorded",
+    "before adjustment",
+    "after adjustment",
+    "units at",
+    "dollars at",
+    "units for",
+    "resulting in a total",
+    "resulting in the total",
+    "resulting in",
+    "resulted in",
+    "after two sales",
+    "there remained",
+    "costing",
+    "cost per unit",
+    "cost each",
+}
+
 
 def _has_template_markers(text: str) -> bool:
     """Check if text contains incomplete template variable markers."""
@@ -78,6 +119,8 @@ def _is_low_signal_key_point(text: str) -> bool:
     if not lower:
         return True
     if _has_template_markers(text):
+        return True
+    if _looks_like_worked_example(text):
         return True
     if any(marker in lower for marker in KEY_POINT_NOISE_MARKERS):
         return True
@@ -109,6 +152,39 @@ def _looks_like_formula(text: str) -> bool:
     return False
 
 
+def _looks_like_worked_example(text: str) -> bool:
+    lower = text.lower().strip()
+    if not lower:
+        return False
+    # Strong markers => worked example
+    if any(marker in lower for marker in WORKED_EXAMPLE_STRONG_MARKERS):
+        return True
+
+    # Secondary markers are treated as worked-example indicators only when
+    # numeric content or moderately high numeric density is present.
+    numeric_density = _numeric_density(text)
+    if any(marker in lower for marker in WORKED_EXAMPLE_NUMERIC_MARKERS) and re.search(r"\d", lower):
+        return True
+
+    # Case-study style facts often pair a percentage and a year with a named company.
+    # Keep the rule narrow: we only trigger when the sentence contains a year,
+    # a percentage, and a possessive capitalized entity (e.g. "Walmart's").
+    if re.search(r"\b19\d{2}\b|\b20\d{2}\b", lower) and re.search(r"\b\d+(?:\.\d+)?\s*%", lower):
+        if re.search(r"\b[A-Z][a-zA-Z]+\'s\b", text):
+            return True
+
+    # Year-over-year case-study statements are generally example-style facts
+    # in factual mode (e.g., "year 1 vs year 2" scenario outcomes).
+    year_labels = re.findall(r"\byear\s*\d+\b", lower)
+    if len(set(year_labels)) >= 2 and re.search(r"\d", lower):
+        return True
+
+    if numeric_density >= 0.18 and any(marker in lower for marker in {"resulting from", "scenario", "scenarios", "requiring an entry"}):
+        return True
+
+    return False
+
+
 def classify_fact(fact: str) -> str:
     """
     Classify a fact into one of:
@@ -121,6 +197,9 @@ def classify_fact(fact: str) -> str:
     lower = text.lower()
 
     if re.match(r"^there\s+(is|are)\b", lower):
+        return "example"
+
+    if _looks_like_worked_example(text):
         return "example"
 
     instruction_phrases = [
@@ -182,7 +261,9 @@ def select_definition(concept: str, facts: List[str]) -> Optional[str]:
     if not facts:
         return None
 
+    # Exclude template artifacts and any facts that look like worked examples
     facts = [f for f in facts if not _has_template_markers(f)]
+    facts = [f for f in facts if classify_fact(f) != "example"]
 
     concept_lower = concept.lower().strip()
     concept_tokens = [
