@@ -266,6 +266,9 @@ Text:
                 continue
             statement = item.get("statement", "")
             source_chunk_id = item.get("source_chunk_id", "")
+            # Try to attach the human-friendly source filename (if available)
+            # so downstream renderers can emit YAML frontmatter and clean sources.
+            source_name = item.get("source") if isinstance(item.get("source"), str) else ""
             if (
                 isinstance(statement, str)
                 and len(statement.strip()) > 10
@@ -275,6 +278,7 @@ Text:
                 all_statements.append({
                     "statement": statement.strip(),
                     "chunk_id": source_chunk_id,
+                    "source": source_name or "",
                 })
 
     return all_statements
@@ -417,12 +421,17 @@ Output ONLY a JSON array with one entry per statement:
             if not concept:
                 continue
             matched += 1
+            # Preserve a human-readable source (filename) alongside the
+            # chunk id by composing "filename::chunk_id" when available.
+            chunk_id = stmt.get("chunk_id", "")
+            source_name = stmt.get("source", "")
+            composed_source = f"{source_name}::{chunk_id}" if source_name else chunk_id
             all_facts.append(
                 Fact(
                     id=str(uuid.uuid4()),
                     concept=concept,
                     content=stmt["statement"],
-                    source_chunk_id=stmt["chunk_id"],
+                    source_chunk_id=composed_source,
                 )
             )
 
