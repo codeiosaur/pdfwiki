@@ -69,6 +69,15 @@ class LLMBackend(ABC):
     def model(self) -> str:
         return self._config.model
 
+    def metrics(self) -> dict:
+        """
+        Return observability counters for this backend instance.
+
+        The default implementation returns an empty dict.  Concrete backends
+        that track retries, fallbacks, or request counts override this.
+        """
+        return {}
+
     @abstractmethod
     def generate(
         self,

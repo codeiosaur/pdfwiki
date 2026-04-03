@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, List, Optional
+import logging
 import os
 import random
 import sys
@@ -24,6 +26,36 @@ from ingest.pdf_loader import Chunk, load_pdf_chunks
 from transform.matching import is_sibling, has_antonym_conflict
 
 _INVALID_FILENAME_CHARS = str.maketrans({c: "" for c in r'\/:*?"<>|'})
+
+
+@dataclass
+class PipelineMetrics:
+    """Per-run observability summary collected at the end of run_pipeline_two_pass."""
+    total_chunks: int = 0
+    total_statements: int = 0
+    total_facts: int = 0
+    pass1_time_s: float = field(default=0.0)
+    pass2_time_s: float = field(default=0.0)
+    pass1_retries: int = 0
+    pass1_fallback_hops: int = 0
+    pass2_retries: int = 0
+    pass2_fallback_hops: int = 0
+
+    def print_summary(self) -> None:
+        print("\n=== PIPELINE METRICS ===")
+        rows = [
+            ("chunks", self.total_chunks),
+            ("statements", self.total_statements),
+            ("facts", self.total_facts),
+            ("pass1_time_s", f"{self.pass1_time_s:.0f}"),
+            ("pass2_time_s", f"{self.pass2_time_s:.0f}"),
+            ("pass1_retries", self.pass1_retries),
+            ("pass1_fallback_hops", self.pass1_fallback_hops),
+            ("pass2_retries", self.pass2_retries),
+            ("pass2_fallback_hops", self.pass2_fallback_hops),
+        ]
+        for label, value in rows:
+            print(f"  {label:<22}: {value}")
 
 
 def validate_pipeline_inputs(pdf_path: str, output_dir: Path, seeds_file: Optional[str] = None) -> None:
@@ -210,7 +242,7 @@ def run_pipeline_two_pass(
         f"Pass 1: Extracting raw statements from {len(chunks)} chunks "
         f"[{pass1_backend.label}:{pass1_backend.model}]..."
     )
-    t0 = time.time()
+    t0 = time.perf_counter()
     total_batches = len(chunk_batches)
     completed_batches = 0
     pace_batches = _should_pace_batches(pass1_backend)
@@ -230,11 +262,11 @@ def run_pipeline_two_pass(
                     f"({len(all_statements)} raw statements)"
                 )
             except Exception as exc:
-                import logging
                 logging.warning("Pass 1 batch failed: %s", exc)
                 continue
 
-    print(f"Pass 1 complete: {len(all_statements)} raw statements extracted ({time.time() - t0:.0f}s)")
+    p1_elapsed = time.perf_counter() - t0
+    print(f"Pass 1 complete: {len(all_statements)} raw statements extracted ({p1_elapsed:.0f}s)")
 
     seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=seeds_file)
 
@@ -246,7 +278,7 @@ def run_pipeline_two_pass(
         f"Pass 2: Assigning concept names to {len(all_statements)} statements "
         f"[{pass2_backend.label}:{pass2_backend.model}]..."
     )
-    t0 = time.time()
+    t0 = time.perf_counter()
     chunk_size = max(_p2_batch * 4, 32)
     statement_chunks = [
         all_statements[i:i + chunk_size]
@@ -272,13 +304,28 @@ def run_pipeline_two_pass(
                     f"({len(all_facts)} facts)"
                 )
             except Exception as exc:
-                import logging
                 logging.warning("Pass 2 batch failed: %s", exc)
                 continue
-    print(f"Pass 2 complete: {len(all_facts)} facts with concept names ({time.time() - t0:.0f}s)")
+
+    p2_elapsed = time.perf_counter() - t0
+    print(f"Pass 2 complete: {len(all_facts)} facts with concept names ({p2_elapsed:.0f}s)")
 
     if not use_strict:
         all_facts = _anchor_facts_to_seeds(all_facts, seeds)
+
+    p1_m = pass1_backend.metrics()
+    p2_m = pass2_backend.metrics()
+    PipelineMetrics(
+        total_chunks=len(chunks),
+        total_statements=len(all_statements),
+        total_facts=len(all_facts),
+        pass1_time_s=p1_elapsed,
+        pass2_time_s=p2_elapsed,
+        pass1_retries=p1_m.get("retry_count", 0),
+        pass1_fallback_hops=p1_m.get("fallback_hops", 0),
+        pass2_retries=p2_m.get("retry_count", 0),
+        pass2_fallback_hops=p2_m.get("fallback_hops", 0),
+    ).print_summary()
 
     return all_facts
 

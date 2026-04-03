@@ -1,10 +1,12 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pipeline import run_pipeline_two_pass, validate_pipeline_inputs
+from backend.base import BackendConfig
+from pipeline import PipelineMetrics, run_pipeline_two_pass, validate_pipeline_inputs
 
 
 def test_validate_pipeline_inputs_accepts_existing_paths(tmp_path: Path) -> None:
@@ -109,6 +111,88 @@ def test_pass1_batch_size_falls_back_to_batch_size() -> None:
 
     # 4 chunks with batch_size=2 (no pass1_batch_size override) → 2 batches of 2
     assert captured_batch_sizes == [2, 2]
+
+
+# ── Observability / metrics tests ─────────────────────────────────────────────
+
+def test_openai_compat_backend_metrics_structure() -> None:
+    """metrics() returns a dict with the expected non-negative integer keys."""
+    from backend.openai_compat import OpenAICompatBackend
+
+    # Build a mock openai client that returns a valid response immediately.
+    mock_choice = SimpleNamespace(
+        message=SimpleNamespace(content="hello", tool_calls=None, refusal=None),
+    )
+    mock_response = SimpleNamespace(choices=[mock_choice], usage=None)
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    config = BackendConfig(
+        provider="openai_compat",
+        base_url="http://localhost:11434/v1",
+        model="mock-model",
+        label="test",
+    )
+    with patch("backend.openai_compat.openai") as mock_openai:
+        mock_openai.OpenAI.return_value = mock_client
+        backend = OpenAICompatBackend(config)
+
+    m = backend.metrics()
+    assert isinstance(m, dict)
+    assert set(m.keys()) == {"total_requests", "retry_count", "fallback_hops"}
+    assert all(isinstance(v, int) and v >= 0 for v in m.values())
+
+
+def test_openai_compat_backend_metrics_increment_on_request() -> None:
+    """total_requests increments once per generate() call."""
+    from backend.openai_compat import OpenAICompatBackend
+
+    mock_choice = SimpleNamespace(
+        message=SimpleNamespace(content="ok", tool_calls=None, refusal=None),
+    )
+    mock_response = SimpleNamespace(choices=[mock_choice], usage=None)
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+
+    config = BackendConfig(
+        provider="openai_compat",
+        base_url="http://localhost:11434/v1",
+        model="mock-model",
+        label="test",
+    )
+    with patch("backend.openai_compat.openai") as mock_openai:
+        mock_openai.OpenAI.return_value = mock_client
+        backend = OpenAICompatBackend(config)
+
+    assert backend.metrics()["total_requests"] == 0
+    backend.generate("prompt one")
+    assert backend.metrics()["total_requests"] == 1
+    backend.generate("prompt two")
+    assert backend.metrics()["total_requests"] == 2
+
+
+def test_pipeline_metrics_dataclass_defaults() -> None:
+    """PipelineMetrics defaults to all-zero values and correct field names."""
+    m = PipelineMetrics()
+    assert m.total_chunks == 0
+    assert m.total_statements == 0
+    assert m.total_facts == 0
+    assert m.pass1_time_s == 0.0
+    assert m.pass2_time_s == 0.0
+    assert m.pass1_retries == 0
+    assert m.pass1_fallback_hops == 0
+    assert m.pass2_retries == 0
+    assert m.pass2_fallback_hops == 0
+
+
+def test_pipeline_metrics_print_summary_contains_key_fields(capsys: pytest.CaptureFixture[str]) -> None:
+    """print_summary() outputs all metric labels."""
+    m = PipelineMetrics(total_chunks=10, pass1_retries=3, pass2_fallback_hops=1)
+    m.print_summary()
+    out = capsys.readouterr().out
+    assert "pass1_retries" in out
+    assert "pass2_fallback_hops" in out
+    assert "chunks" in out
 
 
 def test_pass2_batch_size_passed_to_assign_concepts() -> None:

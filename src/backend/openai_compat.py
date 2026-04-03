@@ -74,6 +74,11 @@ class OpenAICompatBackend(LLMBackend):
         # Use a shorter initial backoff for them; keep the longer default for OpenRouter.
         self._initial_backoff = _INITIAL_BACKOFF_SECONDS if self._is_openrouter else 1.0
 
+        # Observability counters — cumulative since this instance was created.
+        self._total_requests: int = 0
+        self._retry_count: int = 0
+        self._fallback_hops: int = 0
+
     @property
     def is_openrouter(self) -> bool:
         """True when this backend is pointed at OpenRouter."""
@@ -82,6 +87,14 @@ class OpenAICompatBackend(LLMBackend):
     def set_fallback_models(self, models: list[str]) -> None:
         """Set fallback model IDs for OpenRouter's model fallback feature."""
         self._fallback_models = list(models)
+
+    def metrics(self) -> dict:
+        """Return cumulative observability counters for this backend instance."""
+        return {
+            "total_requests": self._total_requests,
+            "retry_count": self._retry_count,
+            "fallback_hops": self._fallback_hops,
+        }
 
     def generate(
         self,
@@ -159,6 +172,7 @@ class OpenAICompatBackend(LLMBackend):
         tag = f"{self.label}" + (f" | {context}" if context else "")
 
         last_exc: Optional[Exception] = None
+        self._total_requests += 1
 
         for model_idx, model in enumerate(models_to_try):
             kwargs["model"] = model
@@ -223,12 +237,14 @@ class OpenAICompatBackend(LLMBackend):
                     reason = "Rate limited" if is_rate_limit else "Empty response"
                     print(f"  [{tag}] {reason} on {model} (attempt {attempt + 1}/{_MAX_RETRIES + 1}), "
                           f"retrying in {round(wait_time)}s...")
+                    self._retry_count += 1
                     time.sleep(wait_time)
                     backoff *= _BACKOFF_MULTIPLIER
 
             # This model exhausted its retries — move to the next
             if model_idx < len(models_to_try) - 1:
                 next_model = models_to_try[model_idx + 1]
+                self._fallback_hops += 1
                 print(f"  [{tag}] {model} failed, trying {next_model}...")
 
         tried = ", ".join(models_to_try)
