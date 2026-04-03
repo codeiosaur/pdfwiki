@@ -34,3 +34,29 @@ def test_apply_fact_hygiene_keeps_normal_fact() -> None:
 
     assert dropped == 0
     assert len(cleaned) == 1
+
+
+def test_apply_fact_hygiene_drops_worked_example_facts() -> None:
+    facts = [
+        _fact("The gross margin, resulting from the weighted-average perpetual cost allocations, was $7,253.", concept="Gross Margin"),
+        _fact("Because inventory values are wrong, the associated accounts are also wrong.", concept="Inventory"),
+    ]
+
+    cleaned, dropped = apply_fact_hygiene(facts)
+
+    assert dropped == 1
+    assert len(cleaned) == 1
+    assert "associated accounts" in cleaned[0].content.lower()
+
+
+def test_apply_fact_hygiene_drops_balance_examples() -> None:
+    facts = [
+        _fact("Beginning merchandise inventory had a balance of $3,150 before adjustment.", concept="Beginning Inventory"),
+        _fact("Inventory is an asset reported on the balance sheet.", concept="Inventory"),
+    ]
+
+    cleaned, dropped = apply_fact_hygiene(facts)
+
+    assert dropped == 1
+    assert len(cleaned) == 1
+    assert "asset" in cleaned[0].content.lower()

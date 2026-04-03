@@ -464,7 +464,7 @@ def generate_pages_wiki(
         definition = selected_definition if selected_definition else "No definition available."
 
         # --- Gather ALL usable content ---
-        all_content = promote_all_facts_to_content(fact_contents, definition)
+        all_content = promote_all_facts_to_content(fact_contents, definition, include_examples=False)
 
         formulas: list[str] = []
         interpretations: list[str] = []
@@ -553,12 +553,13 @@ def generate_pages_wiki(
             concept_type=concept_type,
             formulas=formulas,
             interpretations=interpretations,
-            examples=examples,
+                examples=[],
             cautions=cautions,
             details=details,
             related=related,
             see_also=see_also,
             sources=sources,
+                include_examples=False,
         )
 
         pages[display_title] = "\n".join(lines)

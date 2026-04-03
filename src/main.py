@@ -19,7 +19,12 @@ from postprocess import (
 from transform.cluster import cluster_related_concepts
 from transform.canonicalize import canonicalize_concepts
 from transform.fact_hygiene import apply_fact_hygiene
-from transform.filter import filter_concepts, filter_publishable_grouped_concepts
+from transform.filter import (
+    filter_concepts,
+    filter_publishable_grouped_concepts,
+    filter_example_saturated_concepts,
+)
+from generate.classify import _looks_like_worked_example
 from transform.grouping import group_facts_by_concept
 from transform.merge import merge_similar_concepts
 from transform.normalize import normalize_group_keys
@@ -81,6 +86,13 @@ def run_application(args) -> None:
     all_facts = filter_concepts(all_facts)
     print(f"After filtering: {len(all_facts)} valid concept facts")
 
+    # Re-check for worked-example facts that may have escaped earlier hygiene.
+    pre_recheck = len(all_facts)
+    all_facts = [f for f in all_facts if not _looks_like_worked_example(f.content)]
+    dropped_recheck = pre_recheck - len(all_facts)
+    if dropped_recheck:
+        print(f"Rechecked and dropped {dropped_recheck} worked-example facts before grouping")
+
     grouped = group_facts_by_concept(all_facts)
     rule_normalized_grouped = normalize_group_keys(grouped)
 
@@ -90,6 +102,11 @@ def run_application(args) -> None:
     final_grouped = apply_canonical_map(rule_normalized_grouped, canonical_map)
     final_grouped = merge_similar_concepts(final_grouped)
     final_grouped = cluster_related_concepts(final_grouped)
+
+    # Drop concept groups that are dominated by example/worked-example facts
+    final_grouped, dropped_example_groups = filter_example_saturated_concepts(final_grouped, threshold=0.7)
+    if dropped_example_groups:
+        print(f"Filtered {dropped_example_groups} example-saturated concepts")
 
     if use_two_pass:
         final_grouped = consolidate_concepts_llm(final_grouped, backend=canonicalize_backend)
