@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -225,3 +226,79 @@ def test_pass2_batch_size_passed_to_assign_concepts() -> None:
         )
 
     assert all(bs == 8 for bs in captured_inner_batch_sizes)
+
+
+# ── Per-pass worker count tests ────────────────────────────────────────────────
+
+def _run_two_pass_tracking_workers(
+    pass1_max_workers: Optional[int] = None,
+    pass2_max_workers: Optional[int] = None,
+    max_workers: int = 5,
+) -> list[int]:
+    """
+    Run run_pipeline_two_pass with mocked extraction and return the max_workers
+    value that each ThreadPoolExecutor was created with, in call order.
+    """
+    from concurrent.futures import ThreadPoolExecutor as _RealTPE
+    from ingest.pdf_loader import Chunk
+
+    fake_chunks = [Chunk(id=f"c{i}", text="text", source="test.pdf", chapter=None) for i in range(2)]
+    recorded: list[int] = []
+
+    class _TrackingTPE:
+        def __init__(self, *args, max_workers=None, **kwargs):
+            recorded.append(max_workers)
+            self._real = _RealTPE(max_workers=max_workers)
+
+        def __enter__(self):
+            return self._real.__enter__()
+
+        def __exit__(self, *args):
+            return self._real.__exit__(*args)
+
+        def submit(self, *args, **kwargs):
+            return self._real.submit(*args, **kwargs)
+
+    backend = _make_mock_backend()
+    with patch("pipeline.ThreadPoolExecutor", _TrackingTPE), \
+         patch("pipeline.load_pdf_chunks", return_value=fake_chunks), \
+         patch("pipeline.extract_raw_statements_batched", return_value=[]), \
+         patch("pipeline.resolve_seed_concepts", return_value=["FIFO"]), \
+         patch("pipeline.assign_concepts_to_statements", return_value=[]):
+
+        run_pipeline_two_pass(
+            "dummy.pdf",
+            pass1_backend=backend,
+            pass2_backend=backend,
+            max_workers=max_workers,
+            pass1_max_workers=pass1_max_workers,
+            pass2_max_workers=pass2_max_workers,
+        )
+
+    return recorded
+
+
+def test_pass1_max_workers_used_for_pass1_executor() -> None:
+    """pass1_max_workers controls the Pass 1 ThreadPoolExecutor worker count."""
+    recorded = _run_two_pass_tracking_workers(pass1_max_workers=6, max_workers=2)
+    assert recorded[0] == 6  # Pass 1 executor
+
+
+def test_pass2_max_workers_used_for_pass2_executor() -> None:
+    """pass2_max_workers controls the Pass 2 ThreadPoolExecutor worker count."""
+    recorded = _run_two_pass_tracking_workers(pass2_max_workers=3, max_workers=2)
+    assert recorded[1] == 3  # Pass 2 executor
+
+
+def test_max_workers_used_when_per_pass_unset() -> None:
+    """Both executors fall back to max_workers when per-pass overrides are absent."""
+    recorded = _run_two_pass_tracking_workers(max_workers=4)
+    assert recorded[0] == 4
+    assert recorded[1] == 4
+
+
+def test_pass1_and_pass2_max_workers_independent() -> None:
+    """Pass 1 and Pass 2 can use different worker counts simultaneously."""
+    recorded = _run_two_pass_tracking_workers(pass1_max_workers=7, pass2_max_workers=2, max_workers=5)
+    assert recorded[0] == 7  # Pass 1
+    assert recorded[1] == 2  # Pass 2

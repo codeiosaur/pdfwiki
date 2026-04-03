@@ -227,9 +227,13 @@ def run_pipeline_two_pass(
     seeds_file: Optional[str] = None,
     pass1_batch_size: Optional[int] = None,
     pass2_batch_size: Optional[int] = None,
+    pass1_max_workers: Optional[int] = None,
+    pass2_max_workers: Optional[int] = None,
 ) -> List[Fact]:
     _p1_batch = pass1_batch_size if pass1_batch_size is not None else batch_size
     _p2_batch = pass2_batch_size if pass2_batch_size is not None else batch_size
+    _p1_workers = pass1_max_workers if pass1_max_workers is not None else max_workers
+    _p2_workers = pass2_max_workers if pass2_max_workers is not None else max_workers
 
     chunks = load_pdf_chunks(pdf_path=pdf_path)
     if isinstance(max_chunks, int) and max_chunks > 0:
@@ -246,7 +250,7 @@ def run_pipeline_two_pass(
     total_batches = len(chunk_batches)
     completed_batches = 0
     pace_batches = _should_pace_batches(pass1_backend)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=_p1_workers) as executor:
         futures = []
         for index, batch in enumerate(chunk_batches):
             if pace_batches and index > 0:
@@ -287,7 +291,7 @@ def run_pipeline_two_pass(
     all_facts: List[Fact] = []
     total_statement_batches = len(statement_chunks)
     completed_statement_batches = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=_p2_workers) as executor:
         futures = [
             executor.submit(
                 assign_concepts_to_statements, chunk, pass2_backend, seeds,

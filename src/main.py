@@ -37,6 +37,8 @@ def run_application(args) -> None:
     pass1_batch_size = int(os.getenv("PIPELINE_PASS1_BATCH_SIZE", str(batch_size)))
     pass2_batch_size = int(os.getenv("PIPELINE_PASS2_BATCH_SIZE", str(batch_size)))
     max_workers = int(os.getenv("PIPELINE_MAX_WORKERS", "5"))
+    pass1_max_workers = int(os.getenv("PASS1_MAX_WORKERS", str(max_workers)))
+    pass2_max_workers = int(os.getenv("PASS2_MAX_WORKERS", str(max_workers)))
     max_chunks_env = os.getenv("PIPELINE_MAX_CHUNKS", "").strip()
     max_chunks = int(max_chunks_env) if max_chunks_env.isdigit() else None
 
@@ -68,6 +70,8 @@ def run_application(args) -> None:
             seeds_file=args.seeds,
             pass1_batch_size=pass1_batch_size,
             pass2_batch_size=pass2_batch_size,
+            pass1_max_workers=pass1_max_workers,
+            pass2_max_workers=pass2_max_workers,
         )
     else:
         print("\n=== USING LEGACY SINGLE-PASS PIPELINE ===")
