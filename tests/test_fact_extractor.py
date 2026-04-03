@@ -192,3 +192,54 @@ class TestAssignConceptsToStatements:
         backend = _Backend(["not json"])
         facts = assign_concepts_to_statements(stmts, backend, seed_concepts=[], batch_size=16)
         assert facts == []
+
+
+# ---------------------------------------------------------------------------
+# Source attribution invariant
+# ---------------------------------------------------------------------------
+
+class TestSourceChunkIdPreserved:
+    """source_chunk_id from Pass 1 statements must survive through Pass 2 Facts."""
+
+    def _make_statements_with_chunks(self, chunk_ids: list[str]) -> list[dict]:
+        return [
+            {"statement": f"Statement from {cid}", "chunk_id": cid, "source": "test.pdf"}
+            for cid in chunk_ids
+        ]
+
+    def _response_for(self, stmts: list[dict]) -> str:
+        # assign_concepts_to_statements expects {"index": N, "concept": "..."} items
+        import json
+        return json.dumps([
+            {"index": i + 1, "concept": "Test Concept"}
+            for i in range(len(stmts))
+        ])
+
+    def _expected_ids(self, chunk_ids: list[str]) -> set[str]:
+        # source_chunk_id is composed as "source::chunk_id" when source is present
+        return {f"test.pdf::{cid}" for cid in chunk_ids}
+
+    def test_source_chunk_id_preserved_single_batch(self):
+        chunk_ids = ["chunk-a", "chunk-b", "chunk-c"]
+        stmts = self._make_statements_with_chunks(chunk_ids)
+        backend = _Backend([self._response_for(stmts)])
+        facts = assign_concepts_to_statements(stmts, backend, seed_concepts=["Test Concept"], batch_size=16)
+        returned_ids = {f.source_chunk_id for f in facts}
+        assert returned_ids == self._expected_ids(chunk_ids)
+
+    def test_source_chunk_id_preserved_across_batches(self):
+        chunk_ids = [f"chunk-{i}" for i in range(6)]
+        stmts = self._make_statements_with_chunks(chunk_ids)
+        resp1 = self._response_for(stmts[:3])
+        resp2 = self._response_for(stmts[3:])
+        backend = _Backend([resp1, resp2])
+        facts = assign_concepts_to_statements(stmts, backend, seed_concepts=["Test Concept"], batch_size=3)
+        returned_ids = {f.source_chunk_id for f in facts}
+        assert returned_ids == self._expected_ids(chunk_ids)
+
+    def test_no_fact_has_empty_source_chunk_id(self):
+        chunk_ids = ["chunk-x", "chunk-y"]
+        stmts = self._make_statements_with_chunks(chunk_ids)
+        backend = _Backend([self._response_for(stmts)])
+        facts = assign_concepts_to_statements(stmts, backend, seed_concepts=["Test Concept"], batch_size=16)
+        assert all(f.source_chunk_id for f in facts), "Every Fact must carry a non-empty source_chunk_id"
