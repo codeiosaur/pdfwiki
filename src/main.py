@@ -34,6 +34,8 @@ def run_application(args) -> None:
     demo_pdf_path = args.input or "./sample_accounting_openstax.pdf"
     output_path = Path(args.output)
     batch_size = int(os.getenv("PIPELINE_BATCH_SIZE", "4"))
+    pass1_batch_size = int(os.getenv("PIPELINE_PASS1_BATCH_SIZE", str(batch_size)))
+    pass2_batch_size = int(os.getenv("PIPELINE_PASS2_BATCH_SIZE", str(batch_size)))
     max_workers = int(os.getenv("PIPELINE_MAX_WORKERS", "5"))
     max_chunks_env = os.getenv("PIPELINE_MAX_CHUNKS", "").strip()
     max_chunks = int(max_chunks_env) if max_chunks_env.isdigit() else None
@@ -64,6 +66,8 @@ def run_application(args) -> None:
             max_workers=max_workers,
             max_chunks=max_chunks,
             seeds_file=args.seeds,
+            pass1_batch_size=pass1_batch_size,
+            pass2_batch_size=pass2_batch_size,
         )
     else:
         print("\n=== USING LEGACY SINGLE-PASS PIPELINE ===")

@@ -193,12 +193,17 @@ def run_pipeline_two_pass(
     max_workers: int = 5,
     max_chunks: Optional[int] = None,
     seeds_file: Optional[str] = None,
+    pass1_batch_size: Optional[int] = None,
+    pass2_batch_size: Optional[int] = None,
 ) -> List[Fact]:
+    _p1_batch = pass1_batch_size if pass1_batch_size is not None else batch_size
+    _p2_batch = pass2_batch_size if pass2_batch_size is not None else batch_size
+
     chunks = load_pdf_chunks(pdf_path=pdf_path)
     if isinstance(max_chunks, int) and max_chunks > 0:
         chunks = chunks[:max_chunks]
 
-    chunk_batches = list(generate_chunk_batches(chunks, batch_size=batch_size))
+    chunk_batches = list(generate_chunk_batches(chunks, batch_size=_p1_batch))
     all_statements: List[dict] = []
 
     print(
@@ -214,7 +219,7 @@ def run_pipeline_two_pass(
         for index, batch in enumerate(chunk_batches):
             if pace_batches and index > 0:
                 time.sleep(random.uniform(1.0, 3.0))
-            futures.append(executor.submit(extract_raw_statements_batched, batch, pass1_backend, batch_size))
+            futures.append(executor.submit(extract_raw_statements_batched, batch, pass1_backend, _p1_batch))
         for future in as_completed(futures):
             try:
                 batch_statements = future.result()
@@ -224,7 +229,9 @@ def run_pipeline_two_pass(
                     f"  Pass 1 progress: {completed_batches}/{total_batches} batches complete "
                     f"({len(all_statements)} raw statements)"
                 )
-            except Exception:
+            except Exception as exc:
+                import logging
+                logging.warning("Pass 1 batch failed: %s", exc)
                 continue
 
     print(f"Pass 1 complete: {len(all_statements)} raw statements extracted ({time.time() - t0:.0f}s)")
@@ -240,7 +247,7 @@ def run_pipeline_two_pass(
         f"[{pass2_backend.label}:{pass2_backend.model}]..."
     )
     t0 = time.time()
-    chunk_size = max(batch_size * 4, 32)
+    chunk_size = max(_p2_batch * 4, 32)
     statement_chunks = [
         all_statements[i:i + chunk_size]
         for i in range(0, len(all_statements), chunk_size)
@@ -252,7 +259,7 @@ def run_pipeline_two_pass(
         futures = [
             executor.submit(
                 assign_concepts_to_statements, chunk, pass2_backend, seeds,
-                16, use_strict,
+                _p2_batch, use_strict,
             )
             for chunk in statement_chunks
         ]
@@ -264,7 +271,9 @@ def run_pipeline_two_pass(
                     f"  Pass 2 progress: {completed_statement_batches}/{total_statement_batches} batches complete "
                     f"({len(all_facts)} facts)"
                 )
-            except Exception:
+            except Exception as exc:
+                import logging
+                logging.warning("Pass 2 batch failed: %s", exc)
                 continue
     print(f"Pass 2 complete: {len(all_facts)} facts with concept names ({time.time() - t0:.0f}s)")
 
