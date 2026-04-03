@@ -4,9 +4,6 @@ Command-line interface for pdf-to-wiki.
 Currently exposes the minimum needed to run the pipeline:
   - positional input (PDF path)
   - --seeds flag (domain seed file)
-
-Additional flags (--output, --provider, --model, --workers, etc.)
-will be added in feature/v2-cli per the Step 3 roadmap.
 """
 
 import argparse
