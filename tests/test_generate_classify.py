@@ -256,6 +256,79 @@ class TestSelectDefinitionScoring:
         assert "spreading out" in result
 
 
+class TestWorkedExampleLeakage:
+    """
+    Regression guard: worked-example patterns must never slip through as
+    key_point or definition.  Each parametrised case exercises a distinct
+    detection path in _looks_like_worked_example / classify_fact.
+    """
+
+    @pytest.mark.parametrize("text,path", [
+        (
+            "Step 1: Purchase 100 units at $5.00 each for a total of $500.",
+            "numeric_marker:units_at",
+        ),
+        (
+            "Step 2: The debit entry of $250 was recorded to Accounts Receivable.",
+            "numeric_marker:debit_entry",
+        ),
+        (
+            "After two sales, there remained 75 units costing $27 each in the FIFO layer.",
+            "numeric_marker:costing+after_two_sales",
+        ),
+        (
+            "The company had inventory of $4,000 in year 1 and $3,500 in year 2.",
+            "year_over_year",
+        ),
+        (
+            "Purchase 1: 50 units at $8.00; Purchase 2: 75 units at $9.00; Purchase 3: 40 units at $10.50.",
+            "high_numeric_density",
+        ),
+        (
+            "For the scenario where 200 units were sold at $15.00 each, the revenue was $3,000.",
+            "example_marker:scenario",
+        ),
+        (
+            "The gross margin, resulting from the weighted-average perpetual cost allocations, was $7,253.",
+            "strong_marker:resulting_from",
+        ),
+        (
+            "Subtracting this ending inventory from the $16,155 total leaves $7,200 in cost of goods sold.",
+            "strong_numeric_marker:subtracting_ending_inventory",
+        ),
+    ])
+    def test_worked_example_classifies_as_example(self, text: str, path: str) -> None:
+        result = classify_fact(text)
+        assert result == "example", (
+            f"Pattern '{path}' classified as '{result}', expected 'example'.\n"
+            f"  Text: {text!r}"
+        )
+
+    @pytest.mark.parametrize("text,path", [
+        (
+            "Step 1: Purchase 100 units at $5.00 each for a total of $500.",
+            "numeric_marker:units_at",
+        ),
+        (
+            "After two sales, there remained 75 units costing $27 each in the FIFO layer.",
+            "numeric_marker:costing",
+        ),
+        (
+            "The company had inventory of $4,000 in year 1 and $3,500 in year 2.",
+            "year_over_year",
+        ),
+        (
+            "The gross margin, resulting from the weighted-average perpetual cost allocations, was $7,253.",
+            "strong_marker:resulting_from",
+        ),
+    ])
+    def test_looks_like_worked_example_detection(self, text: str, path: str) -> None:
+        from generate.classify import _looks_like_worked_example
+        assert _looks_like_worked_example(text), (
+            f"Pattern '{path}' not detected as worked example.\n  Text: {text!r}"
+        )
+
+
 class TestPickBestDefinition:
     def test_picks_from_definitions(self):
         definitions = [
