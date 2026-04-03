@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 import uuid as _uuid
 
@@ -39,15 +40,15 @@ def enrich_thin_concepts(
     grouped: dict[str, List[Fact]],
     backend: LLMBackend,
     min_facts: int = 4,
+    workers: int = 1,
 ) -> dict[str, List[Fact]]:
-    enriched: dict[str, List[Fact]] = {}
-    total_added = 0
+    enriched: dict[str, List[Fact]] = {c: list(f) for c, f in grouped.items()}
+    thin = sorted(c for c, f in grouped.items() if len(f) < min_facts)
+    if not thin:
+        return enriched
 
-    for concept, facts in grouped.items():
-        enriched[concept] = list(facts)
-        if len(facts) >= min_facts:
-            continue
-
+    def _enrich_one(concept: str) -> tuple[str, list[Fact]]:
+        facts = grouped[concept]
         need = min_facts - len(facts) + 1
         existing_block = "\n".join(f"- {f.content}" for f in facts)
         prompt = f"""The following facts about "{concept}" were extracted from a textbook.
@@ -71,30 +72,40 @@ Output ONLY a JSON array of strings:
             raw = backend.generate(prompt, max_tokens=600)
         except Exception as exc:
             print(f"  [enrich] {concept}: LLM call failed: {exc}")
-            continue
+            return concept, []
 
         parsed = _parse_json_array(raw)
         if not isinstance(parsed, list):
-            continue
+            return concept, []
 
-        added = 0
+        new_facts: list[Fact] = []
         for item in parsed:
             if not isinstance(item, str) or not item.strip():
                 continue
-            enriched[concept].append(Fact(
+            new_facts.append(Fact(
                 id=str(_uuid.uuid4()),
                 concept=concept,
                 content=item.strip(),
                 source_chunk_id="",
             ))
-            added += 1
+        return concept, new_facts
 
-        if added:
-            total_added += added
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results: list = list(executor.map(_enrich_one, thin))
+    else:
+        results = [_enrich_one(c) for c in thin]
+
+    total_added = 0
+    enriched_count = 0
+    for concept, new_facts in results:
+        if new_facts:
+            enriched[concept].extend(new_facts)
+            total_added += len(new_facts)
+            enriched_count += 1
 
     if total_added:
-        print(f"  [enrich] Added {total_added} facts across "
-              f"{sum(1 for c, f in grouped.items() if len(f) < min_facts and c in enriched)} thin concepts")
+        print(f"  [enrich] Added {total_added} facts across {enriched_count} thin concepts")
 
     return enriched
 

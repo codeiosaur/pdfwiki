@@ -8,6 +8,7 @@ Three rendering modes:
 """
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from extract.fact_extractor import Fact
 from transform.matching import has_antonym_conflict, is_sibling
@@ -104,7 +105,11 @@ def _build_frontmatter_from_sources(source_names: list[str]) -> list[str]:
 # Standard renderer
 # ===================================================================
 
-def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = False) -> dict[str, str]:
+def generate_pages(
+    grouped: dict[str, list[Fact]],
+    include_empty_pages: bool = False,
+    workers: int = 1,
+) -> dict[str, str]:
     """
     Generate concept pages from grouped facts using deterministic fact types.
 
@@ -113,13 +118,13 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
     - Key Points (only key_point facts)
     - Excludes examples and instructions
     """
-    pages: dict[str, str] = {}
-    concept_names = list(grouped.keys())
+    concept_names = sorted(grouped.keys())
     _init_acronyms(concept_names)
     all_display_titles, alias_map = _build_link_maps(concept_names)
     related_map = build_related_concepts(concept_names, max_related=4)
 
-    for concept, facts in grouped.items():
+    def _render_one(concept: str) -> tuple[str, str] | None:
+        facts = grouped[concept]
         display_title = normalize_page_title(concept)
         fact_contents = [item for item in unique_fact_contents(facts) if not is_question_prompt(item)]
         text_to_sources = fact_sources(facts)
@@ -188,9 +193,8 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
             ]
 
         if definition == "No definition available." and not key_points and not include_empty_pages:
-            continue
+            return None
 
-        # Build frontmatter from any real (non-UUID) source filenames we have.
         unique_sources = sorted({
             src.split("::")[0]
             for srcs in text_to_sources.values()
@@ -227,8 +231,17 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
             else:
                 lines.append("- None")
 
-        pages[display_title] = "\n".join(lines)
+        return display_title, "\n".join(lines)
 
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            raw: list = list(executor.map(_render_one, concept_names))
+    else:
+        raw = [_render_one(c) for c in concept_names]
+    pages: dict[str, str] = {}
+    for result in raw:
+        if result is not None:
+            pages[result[0]] = result[1]
     return pages
 
 
@@ -236,20 +249,24 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
 # Enhanced renderer (semantic sections with footnotes)
 # ===================================================================
 
-def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages: bool = False) -> dict[str, str]:
+def generate_pages_enhanced(
+    grouped: dict[str, list[Fact]],
+    include_empty_pages: bool = False,
+    workers: int = 1,
+) -> dict[str, str]:
     """
     Generate richer wiki-style pages with semantic sections.
 
     This renderer keeps deterministic logic and source citations while structuring
     content into narrative sections similar to curated study notes.
     """
-    pages: dict[str, str] = {}
-    concept_names = list(grouped.keys())
+    concept_names = sorted(grouped.keys())
     _init_acronyms(concept_names)
     all_display_titles, alias_map = _build_link_maps(concept_names)
     related_map = build_related_concepts(concept_names, max_related=4)
 
-    for concept, facts in grouped.items():
+    def _render_one(concept: str) -> tuple[str, str] | None:
+        facts = grouped[concept]
         display_title = normalize_page_title(concept)
         fact_contents = [item for item in unique_fact_contents(facts) if not is_question_prompt(item)]
         text_to_sources = fact_sources(facts)
@@ -305,7 +322,7 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
             and not examples and not cautions and not key_points
             and not include_empty_pages
         ):
-            continue
+            return None
 
         intro = build_enhanced_intro(display_title, definition, interpretations, key_points)
         intro = inject_wikilinks(intro, all_display_titles, display_title, alias_map=alias_map)
@@ -442,8 +459,17 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
             else:
                 lines.append("- None")
 
-        pages[display_title] = "\n".join(lines)
+        return display_title, "\n".join(lines)
 
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            raw: list = list(executor.map(_render_one, concept_names))
+    else:
+        raw = [_render_one(c) for c in concept_names]
+    pages: dict[str, str] = {}
+    for result in raw:
+        if result is not None:
+            pages[result[0]] = result[1]
     return pages
 
 
@@ -452,7 +478,9 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
 # ===================================================================
 
 def generate_pages_wiki(
-    grouped: dict[str, list[Fact]], include_empty_pages: bool = False
+    grouped: dict[str, list[Fact]],
+    include_empty_pages: bool = False,
+    workers: int = 1,
 ) -> dict[str, str]:
     """
     Wiki-style page renderer with:
@@ -463,8 +491,7 @@ def generate_pages_wiki(
     - All non-duplicate facts promoted to content
     - Clean source attribution (no chunk UUIDs)
     """
-    pages: dict[str, str] = {}
-    concept_names = list(grouped.keys())
+    concept_names = sorted(grouped.keys())
     _init_acronyms(concept_names)
 
     all_display_titles = {normalize_page_title(c) for c in concept_names}
@@ -485,7 +512,8 @@ def generate_pages_wiki(
             f.source_chunk_id for f in facts if f.source_chunk_id
         }
 
-    for concept, facts in grouped.items():
+    def _render_one(concept: str) -> tuple[str, str] | None:
+        facts = grouped[concept]
         display_title = normalize_page_title(concept)
         fact_contents = [item for item in unique_fact_contents(facts) if not is_question_prompt(item)]
         concept_type = classify_concept_type(concept, fact_contents)
@@ -541,7 +569,7 @@ def generate_pages_wiki(
             or formulas or interpretations or cautions or details
         )
         if not has_content and not include_empty_pages:
-            continue
+            return None
 
         # --- Build intro paragraph ---
         intro = emphasize_concept_once(definition, display_title)
@@ -610,8 +638,17 @@ def generate_pages_wiki(
 
         # Prepend YAML frontmatter when we have human-friendly source names.
         fm_lines = _build_frontmatter_from_sources(sources) if sources else []
-        pages[display_title] = "\n".join(fm_lines + lines)
+        return display_title, "\n".join(fm_lines + lines)
 
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            raw: list = list(executor.map(_render_one, concept_names))
+    else:
+        raw = [_render_one(c) for c in concept_names]
+    pages: dict[str, str] = {}
+    for result in raw:
+        if result is not None:
+            pages[result[0]] = result[1]
     return pages
 
 

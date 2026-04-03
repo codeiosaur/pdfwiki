@@ -39,6 +39,8 @@ def run_application(args) -> None:
     max_workers = int(os.getenv("PIPELINE_MAX_WORKERS", "5"))
     pass1_max_workers = int(os.getenv("PASS1_MAX_WORKERS", str(max_workers)))
     pass2_max_workers = int(os.getenv("PASS2_MAX_WORKERS", str(max_workers)))
+    render_workers = int(os.getenv("PIPELINE_RENDER_WORKERS", "1"))
+    enrich_workers = int(os.getenv("PIPELINE_ENRICH_WORKERS", "1"))
     max_chunks_env = os.getenv("PIPELINE_MAX_CHUNKS", "").strip()
     max_chunks = int(max_chunks_env) if max_chunks_env.isdigit() else None
 
@@ -123,7 +125,8 @@ def run_application(args) -> None:
     if enrich_threshold > 0:
         print(f"\nEnrichment pass: filling concepts with < {enrich_threshold} facts...")
         final_grouped = enrich_thin_concepts(
-            final_grouped, backend=canonicalize_backend, min_facts=enrich_threshold
+            final_grouped, backend=canonicalize_backend, min_facts=enrich_threshold,
+            workers=enrich_workers,
         )
 
     min_publishable = int(os.getenv("PIPELINE_MIN_PUBLISHABLE_FACTS", "2"))
@@ -153,10 +156,10 @@ def run_application(args) -> None:
 
     enhanced_mode = os.getenv("ENHANCED_PAGE_MODE", "1").strip().lower() in {"1", "true", "yes"}
     if enhanced_mode:
-        pages = generate_pages_wiki(final_grouped)
+        pages = generate_pages_wiki(final_grouped, workers=render_workers)
         mode_label = "wiki"
     else:
-        pages = generate_pages(final_grouped)
+        pages = generate_pages(final_grouped, workers=render_workers)
         mode_label = "standard"
     skipped_pages = max(0, len(final_grouped) - len(pages))
     print(f"\nGenerated {len(pages)} concept pages ({mode_label} mode)")
