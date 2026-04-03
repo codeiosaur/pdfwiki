@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from backend.base import BackendConfig
-from pipeline import PipelineMetrics, run_pipeline_two_pass, validate_pipeline_inputs
+from pipeline import PipelineMetrics, run_pipeline_two_pass, run_pipeline_streaming, validate_pipeline_inputs
 
 
 def test_validate_pipeline_inputs_accepts_existing_paths(tmp_path: Path) -> None:
@@ -302,3 +302,87 @@ def test_pass1_and_pass2_max_workers_independent() -> None:
     recorded = _run_two_pass_tracking_workers(pass1_max_workers=7, pass2_max_workers=2, max_workers=5)
     assert recorded[0] == 7  # Pass 1
     assert recorded[1] == 2  # Pass 2
+
+
+# ── Streaming pipeline equivalence tests ──────────────────────────────────────
+
+def _run_both_modes(fake_chunks, fake_statements, fake_facts):
+    """Run barrier and streaming modes on the same mocked input; return both fact lists."""
+    backend = _make_mock_backend()
+
+    common_patches = dict(
+        load_pdf_chunks=fake_chunks,
+        extract_raw_statements_batched=fake_statements,
+        resolve_seed_concepts=["FIFO", "LIFO"],
+        assign_concepts_to_statements=fake_facts,
+    )
+
+    with patch("pipeline.load_pdf_chunks", return_value=common_patches["load_pdf_chunks"]), \
+         patch("pipeline.extract_raw_statements_batched", return_value=common_patches["extract_raw_statements_batched"]), \
+         patch("pipeline.resolve_seed_concepts", return_value=common_patches["resolve_seed_concepts"]), \
+         patch("pipeline.assign_concepts_to_statements", return_value=common_patches["assign_concepts_to_statements"]):
+        barrier = run_pipeline_two_pass("dummy.pdf", pass1_backend=backend, pass2_backend=backend)
+
+    with patch("pipeline.load_pdf_chunks", return_value=common_patches["load_pdf_chunks"]), \
+         patch("pipeline.extract_raw_statements_batched", return_value=common_patches["extract_raw_statements_batched"]), \
+         patch("pipeline.resolve_seed_concepts", return_value=common_patches["resolve_seed_concepts"]), \
+         patch("pipeline.assign_concepts_to_statements", return_value=common_patches["assign_concepts_to_statements"]):
+        streaming = run_pipeline_streaming("dummy.pdf", pass1_backend=backend, pass2_backend=backend)
+
+    return barrier, streaming
+
+
+def test_streaming_produces_same_concepts_as_barrier() -> None:
+    """Streaming mode produces the same set of concept names as barrier mode."""
+    from ingest.pdf_loader import Chunk
+    from extract.fact_extractor import Fact
+
+    fake_chunks = [Chunk(id=f"c{i}", text="text", source="test.pdf", chapter=None) for i in range(4)]
+    fake_statements = [{"statement": f"s{i}", "chunk_id": f"c{i}", "source": "test.pdf"} for i in range(4)]
+    fake_facts = [
+        Fact(id=f"f{i}", concept="FIFO", content=f"fact {i}", source_chunk_id=f"c{i}")
+        for i in range(3)
+    ]
+
+    barrier, streaming = _run_both_modes(fake_chunks, fake_statements, fake_facts)
+
+    barrier_concepts = {f.concept for f in barrier}
+    streaming_concepts = {f.concept for f in streaming}
+    assert barrier_concepts == streaming_concepts
+
+
+def test_streaming_preserves_source_chunk_ids() -> None:
+    """source_chunk_id is preserved on every Fact returned by streaming mode."""
+    from ingest.pdf_loader import Chunk
+    from extract.fact_extractor import Fact
+
+    fake_chunks = [Chunk(id=f"c{i}", text="text", source="test.pdf", chapter=None) for i in range(3)]
+    fake_statements = [{"statement": "s", "chunk_id": "c0", "source": "test.pdf"}]
+    fake_facts = [
+        Fact(id=f"f{i}", concept="FIFO", content=f"fact {i}", source_chunk_id=f"c{i}")
+        for i in range(3)
+    ]
+
+    backend = _make_mock_backend()
+    with patch("pipeline.load_pdf_chunks", return_value=fake_chunks), \
+         patch("pipeline.extract_raw_statements_batched", return_value=fake_statements), \
+         patch("pipeline.resolve_seed_concepts", return_value=["FIFO"]), \
+         patch("pipeline.assign_concepts_to_statements", return_value=fake_facts):
+        facts = run_pipeline_streaming("dummy.pdf", pass1_backend=backend, pass2_backend=backend)
+
+    assert all(f.source_chunk_id for f in facts), "Every Fact must have a non-empty source_chunk_id"
+
+
+def test_streaming_returns_no_facts_when_pass1_empty() -> None:
+    """Streaming mode returns an empty list when Pass 1 yields no statements."""
+    from ingest.pdf_loader import Chunk
+
+    fake_chunks = [Chunk(id="c0", text="text", source="test.pdf", chapter=None)]
+    backend = _make_mock_backend()
+    with patch("pipeline.load_pdf_chunks", return_value=fake_chunks), \
+         patch("pipeline.extract_raw_statements_batched", return_value=[]), \
+         patch("pipeline.resolve_seed_concepts", return_value=["FIFO"]), \
+         patch("pipeline.assign_concepts_to_statements", return_value=[]):
+        facts = run_pipeline_streaming("dummy.pdf", pass1_backend=backend, pass2_backend=backend)
+
+    assert facts == []
