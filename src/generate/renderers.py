@@ -70,6 +70,36 @@ def _build_link_maps(concept_names: list[str]) -> tuple[set[str], dict[str, str]
     return all_display_titles, alias_map
 
 
+def _build_frontmatter_from_sources(source_names: list[str]) -> list[str]:
+    """Build a small YAML frontmatter block from source filenames.
+
+    Expects a list of source name strings (filenames, without chunk suffix).
+    Returns a list of lines to prepend to the page content.
+    """
+    if not source_names:
+        return []
+    tags = []
+    for s in source_names:
+        if not s:
+            continue
+        base = s.split("::")[0]
+        # strip common extensions
+        if "." in base:
+            base = base.rsplit(".", 1)[0]
+        tags.append(base)
+    tags = sorted(set(tags))
+    lines: list[str] = ["---", "tags:"]
+    for t in tags:
+        lines.append(f"  - {t}")
+    # derive a simple folder hint from the first tag (useful in Obsidian)
+    if tags:
+        folder = tags[0].split("-")[0]
+        if folder:
+            lines.append(f"folder: {folder}")
+    lines.append("---")
+    return lines
+
+
 # ===================================================================
 # Standard renderer
 # ===================================================================
@@ -160,11 +190,19 @@ def generate_pages(grouped: dict[str, list[Fact]], include_empty_pages: bool = F
         if definition == "No definition available." and not key_points and not include_empty_pages:
             continue
 
-        lines: list[str] = [
+        # Build frontmatter from any real (non-UUID) source filenames we have.
+        unique_sources = sorted({
+            src.split("::")[0]
+            for srcs in text_to_sources.values()
+            for src in srcs
+            if src
+        })
+        real_sources = [s for s in unique_sources if not looks_like_uuid(s)]
+        fm_lines = _build_frontmatter_from_sources(real_sources) if real_sources else []
+
+        lines: list[str] = fm_lines + [
             f"# {display_title}", "",
             "## Lead", lead, "",
-            "## Definition",
-            definition_rendered[0] if definition_rendered else definition, "",
             "## Key Points",
         ]
 
@@ -346,10 +384,18 @@ def generate_pages_enhanced(grouped: dict[str, list[Fact]], include_empty_pages:
                 for item in key_point_rendered
             ]
 
-        lines: list[str] = [
+        # Build frontmatter from any real (non-UUID) source filenames we have.
+        unique_sources = sorted({
+            src.split("::")[0]
+            for srcs in text_to_sources.values()
+            for src in srcs
+            if src
+        })
+        real_sources = [s for s in unique_sources if not looks_like_uuid(s)]
+        fm_lines = _build_frontmatter_from_sources(real_sources) if real_sources else []
+
+        lines: list[str] = fm_lines + [
             f"# {display_title}", "", intro, "", "---", "",
-            "## Definition",
-            definition_rendered[0] if definition_rendered else definition,
         ]
 
         if formula_rendered:
@@ -562,7 +608,9 @@ def generate_pages_wiki(
                 include_examples=False,
         )
 
-        pages[display_title] = "\n".join(lines)
+        # Prepend YAML frontmatter when we have human-friendly source names.
+        fm_lines = _build_frontmatter_from_sources(sources) if sources else []
+        pages[display_title] = "\n".join(fm_lines + lines)
 
     return pages
 

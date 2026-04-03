@@ -110,6 +110,19 @@ OPENROUTER_ZDR=1  # Optional: request Zero Data Retention on OpenRouter calls
 PASS2_FALLBACK_MODELS=meta-llama/llama-4-maverick:free,qwen/qwen3-coder:free
 ```
 
+Recommended free-tier OpenRouter slugs (examples)
+------------------------------------------------
+These example slugs are commonly available via OpenRouter and can be used
+with `PASS2_MODEL` for Pass 2. Availability and names change over time —
+verify the slugs in your OpenRouter dashboard before use.
+
+- `meta-llama/llama-3.3-70b-instruct:free`
+- `nvidia/nemotron-3-super-120b-a12b:free`
+- `qwen/qwen3-coder:free`
+- `nousresearch/hermes-3-llama-3.1-405b:free`
+
+Request Zero Data Retention by setting `OPENROUTER_ZDR=1` and `PASS2_ZDR=1`.
+
 ### Cloud only
 
 Point both passes at a cloud provider for maximum quality:

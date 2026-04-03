@@ -48,7 +48,7 @@ def build_wiki_page_lines(
     include_examples: bool = False,
 ) -> list[str]:
     """Build a Wikipedia-like page that still reads like a study note."""
-    lines: list[str] = [f"# {display_title}", "", intro, "", "---", "", "## Definition", definition]
+    lines: list[str] = [f"# {display_title}", "", intro, "", "---", "", definition]
 
     if concept_type == "ratio":
         lines.extend(code_section("Formula", formulas))

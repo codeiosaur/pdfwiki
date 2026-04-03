@@ -191,7 +191,9 @@ class TestWikiArticleStructure:
         page_text = pages["Inventory Valuation"]
 
         assert "?" not in page_text
-        assert "## Definition" in page_text
+        # Definition header is intentionally removed; definition appears in the
+        # intro/lead paragraph instead.
+        assert "## Definition" not in page_text
         assert "## Key Takeaways" in page_text or "## How It Works" in page_text
         assert "## Example" not in page_text
         assert "## Cautions" in page_text
