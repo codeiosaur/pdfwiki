@@ -105,6 +105,7 @@ PASS2_PROVIDER=openai_compat
 PASS2_BASE_URL=https://openrouter.ai/api/v1
 PASS2_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_ZDR=1  # Optional: request Zero Data Retention on OpenRouter calls
 
 PASS2_FALLBACK_MODELS=meta-llama/llama-4-maverick:free,qwen/qwen3-coder:free
 ```
@@ -118,6 +119,7 @@ LLM_PROVIDER=openai_compat
 LLM_BASE_URL=https://openrouter.ai/api/v1
 LLM_MODEL=nvidia/nemotron-3-super-120b-a12b:free
 OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_ZDR=1  # Optional: request Zero Data Retention on OpenRouter calls
 ```
 
 See [.env.example](.env.example) for all options.

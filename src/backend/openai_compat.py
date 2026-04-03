@@ -117,6 +117,10 @@ class OpenAICompatBackend(LLMBackend):
             # Response healing plugin (fixes malformed JSON)
             extra_body["plugins"] = [{"id": "response-healing"}]
 
+            # Zero Data Retention is a request-level OpenRouter parameter.
+            if self._config.openrouter_zdr:
+                extra_body["zdr"] = True
+
         # Build request kwargs
         kwargs: dict[str, Any] = {
             "model": self._config.model,
