@@ -50,6 +50,14 @@ def _default_max_tokens() -> int:
     return _DEFAULT_MAX_TOKENS
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    """Parse a boolean environment flag from common truthy/falsey strings."""
+    raw = get_env(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 # ── Provider registry ─────────────────────────────────────────────────
 
 def _resolve_api_key(provider: str) -> Optional[str]:
@@ -89,6 +97,7 @@ def _build_config(
     api_key: Optional[str] = None,
     max_tokens: Optional[int] = None,
     temperature: float = _DEFAULT_TEMPERATURE,
+    openrouter_zdr: bool = False,
 ) -> BackendConfig:
     """Build a BackendConfig, resolving the API key if not provided."""
     if api_key is None:
@@ -108,6 +117,7 @@ def _build_config(
         temperature=temperature,
         max_tokens=max_tokens,
         label=label,
+        openrouter_zdr=openrouter_zdr,
     )
 
 
@@ -140,8 +150,16 @@ def create_backend(label: str = "default") -> LLMBackend:
     model = get_env("LLM_MODEL", _DEFAULT_MODEL)
     max_tokens_raw = get_env("LLM_MAX_TOKENS", "")
     max_tokens = int(max_tokens_raw) if max_tokens_raw.isdigit() else None
+    openrouter_zdr = _env_flag("OPENROUTER_ZDR", default=False)
 
-    config = _build_config(provider, base_url, model, label=label, max_tokens=max_tokens)
+    config = _build_config(
+        provider,
+        base_url,
+        model,
+        label=label,
+        max_tokens=max_tokens,
+        openrouter_zdr=openrouter_zdr,
+    )
     log_backend_config(label, provider, base_url, model, config.api_key)
 
     return _create_backend_from_config(config)
@@ -161,6 +179,7 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
     global_provider = get_env("LLM_PROVIDER", _DEFAULT_PROVIDER)
     global_base_url = get_env("LLM_BASE_URL", _DEFAULT_BASE_URL)
     global_model = get_env("LLM_MODEL", _DEFAULT_MODEL)
+    global_openrouter_zdr = _env_flag("OPENROUTER_ZDR", default=False)
 
     global_max_tokens_raw = get_env("LLM_MAX_TOKENS", "")
     global_max_tokens = int(global_max_tokens_raw) if global_max_tokens_raw.isdigit() else None
@@ -171,8 +190,16 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
     p1_model = get_env("PASS1_MODEL", global_model)
     p1_max_tokens_raw = get_env("PASS1_MAX_TOKENS", "")
     p1_max_tokens = int(p1_max_tokens_raw) if p1_max_tokens_raw.isdigit() else global_max_tokens
+    p1_openrouter_zdr = _env_flag("PASS1_ZDR", default=global_openrouter_zdr)
 
-    p1_config = _build_config(p1_provider, p1_base_url, p1_model, label="pass1-extract", max_tokens=p1_max_tokens)
+    p1_config = _build_config(
+        p1_provider,
+        p1_base_url,
+        p1_model,
+        label="pass1-extract",
+        max_tokens=p1_max_tokens,
+        openrouter_zdr=p1_openrouter_zdr,
+    )
     log_backend_config("pass1-extract", p1_provider, p1_base_url, p1_model, p1_config.api_key)
     pass1 = _create_backend_from_config(p1_config)
 
@@ -190,8 +217,16 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
     p2_model = get_env("PASS2_MODEL", global_model)
     p2_max_tokens_raw = get_env("PASS2_MAX_TOKENS", "")
     p2_max_tokens = int(p2_max_tokens_raw) if p2_max_tokens_raw.isdigit() else global_max_tokens
+    p2_openrouter_zdr = _env_flag("PASS2_ZDR", default=global_openrouter_zdr)
 
-    p2_config = _build_config(p2_provider, p2_base_url, p2_model, label="pass2-assign", max_tokens=p2_max_tokens)
+    p2_config = _build_config(
+        p2_provider,
+        p2_base_url,
+        p2_model,
+        label="pass2-assign",
+        max_tokens=p2_max_tokens,
+        openrouter_zdr=p2_openrouter_zdr,
+    )
     log_backend_config("pass2-assign", p2_provider, p2_base_url, p2_model, p2_config.api_key)
     pass2 = _create_backend_from_config(p2_config)
 

@@ -27,6 +27,8 @@ class BackendConfig:
         temperature: Sampling temperature.  0 = deterministic.
         max_tokens:  Default max tokens for completions.
         label:      Human-readable name for logging (e.g. 'local', 'api').
+        openrouter_zdr: When True and the backend targets OpenRouter, request
+                        Zero Data Retention for each call.
     """
     provider: str
     base_url: str
@@ -35,6 +37,7 @@ class BackendConfig:
     temperature: float = 0.0
     max_tokens: int = 800
     label: str = ""
+    openrouter_zdr: bool = False
 
     def __post_init__(self) -> None:
         if self.provider not in ("openai_compat", "anthropic"):

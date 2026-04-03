@@ -5,6 +5,7 @@ These are all deterministic — no LLM calls, no network, no Ollama needed.
 """
 
 import os
+import types
 import pytest
 
 from backend.base import BackendConfig, LLMBackendError
@@ -197,7 +198,15 @@ class TestFactory:
         Tests that need a specific key set it explicitly via monkeypatch.setenv.
         """
         monkeypatch.setattr("backend.config._load_dotenv", lambda: None)
-        for var in ["LLM_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"]:
+        for var in [
+            "LLM_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_ZDR",
+            "PASS1_ZDR",
+            "PASS2_ZDR",
+        ]:
             monkeypatch.delenv(var, raising=False)
 
     def test_default_config_is_local_ollama(self, monkeypatch):
@@ -261,3 +270,72 @@ class TestFactory:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "specific")
         from backend.factory import _resolve_api_key
         assert _resolve_api_key("anthropic") == "generic"
+
+    def test_build_config_sets_openrouter_zdr(self):
+        from backend.factory import _build_config
+
+        config = _build_config(
+            "openai_compat",
+            "https://openrouter.ai/api/v1",
+            "openrouter/model",
+            label="test",
+            openrouter_zdr=True,
+        )
+
+        assert config.openrouter_zdr is True
+
+
+class TestOpenAICompatBackend:
+    def test_openrouter_request_includes_zdr(self, monkeypatch):
+        from backend import openai_compat
+        from backend.openai_compat import OpenAICompatBackend
+
+        class DummyMessage:
+            def __init__(self):
+                self.content = "ok"
+                self.tool_calls = None
+                self.refusal = None
+
+        class DummyChoice:
+            def __init__(self):
+                self.message = DummyMessage()
+
+        class DummyResponse:
+            def __init__(self):
+                self.choices = [DummyChoice()]
+                self.usage = None
+
+        class DummyCompletions:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                return DummyResponse()
+
+        class DummyChat:
+            def __init__(self):
+                self.completions = DummyCompletions()
+
+        class DummyClient:
+            def __init__(self, **kwargs):
+                self.init_kwargs = kwargs
+                self.chat = DummyChat()
+
+        dummy_openai = types.SimpleNamespace(OpenAI=DummyClient)
+        monkeypatch.setattr(openai_compat, "openai", dummy_openai)
+
+        config = BackendConfig(
+            provider="openai_compat",
+            base_url="https://openrouter.ai/api/v1",
+            model="openrouter/model",
+            label="test",
+            openrouter_zdr=True,
+        )
+
+        backend = OpenAICompatBackend(config)
+        assert backend.generate("hello") == "ok"
+
+        call = backend._client.chat.completions.calls[0]
+        assert call["extra_body"]["zdr"] is True
+        assert call["extra_body"]["plugins"][0]["id"] == "response-healing"

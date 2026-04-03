@@ -20,6 +20,7 @@ PDF-to-Wiki: converts PDF documents into interlinked Obsidian wiki pages using a
 3. **Hybrid mode:** Pass 1 and Pass 2 can use different backends. Set `PASS1_*` and `PASS2_*` env vars independently. Typical setup: local Ollama for Pass 1, OpenRouter for Pass 2.
 
 4. **OpenRouter structured outputs:** When the backend detects OpenRouter, it automatically enables JSON schema enforcement, response healing, and model fallbacks. This happens transparently — callers don't need to know.
+  If `OPENROUTER_ZDR=1` is set in `.env`, OpenRouter requests also include the request-level `zdr` flag.
 
 5. **Domain agnosticism in the renderer:** `generate/` never contains domain-specific terms. Concept types (ratio/method/system) are inferred from fact content. Related concepts use chunk co-occurrence. The seed list in `fact_extractor.py` is the only place domain knowledge lives.
 

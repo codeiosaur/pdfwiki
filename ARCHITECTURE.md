@@ -56,6 +56,7 @@ All LLM calls go through a pluggable backend interface:
 - Structured outputs (`response_format` with JSON schema) — enforces valid JSON
 - Response healing plugin — fixes malformed JSON
 - Model fallbacks (`PASS2_FALLBACK_MODELS`) — automatic failover between models
+- Zero Data Retention (`OPENROUTER_ZDR`, optionally `PASS1_ZDR` / `PASS2_ZDR`) — sends OpenRouter's request-level `zdr` parameter when enabled
 - Retry with exponential backoff on 429 rate limits
 
 **Key security rule:** API keys come only from env vars or `.env` file. Never hardcoded, never logged, never in repr().

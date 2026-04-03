@@ -193,7 +193,7 @@ class TestWikiArticleStructure:
         assert "?" not in page_text
         assert "## Definition" in page_text
         assert "## Key Takeaways" in page_text or "## How It Works" in page_text
-            assert "## Example" not in page_text
+        assert "## Example" not in page_text
         assert "## Cautions" in page_text
         assert "## Related Concepts" in page_text
         assert "[[Cost of Goods Sold]]" in page_text
