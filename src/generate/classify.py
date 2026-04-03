@@ -333,6 +333,22 @@ def select_definition(concept: str, facts: List[str]) -> Optional[str]:
         if lower.startswith("there are"):
             score -= 3
 
+        # Penalize comparative sentences that attempt to define by comparing
+        # to other things (e.g., "X is higher than Y", "compared to", "vs").
+        comparative_patterns = [
+            r"\bthan\b",
+            r"\bvs\b",
+            r"\bversus\b",
+            r"compared to",
+            r"compared with",
+            r"relative to",
+            r"\bmore than\b",
+            r"\bless than\b",
+            r"\brather than\b",
+        ]
+        if any(re.search(p, lower) for p in comparative_patterns):
+            score -= 3
+
         return score
 
     best_fact: Optional[str] = None
