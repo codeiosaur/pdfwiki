@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 from typing import List
 from pathlib import Path
-from pypdf import PdfReader
 import re
 import uuid
 
@@ -37,6 +36,13 @@ def load_pdf_chunks(
     min_chunk_words: int = 800,
     max_chunk_words: int = 1200,
 ) -> List[Chunk]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise ImportError(
+            "The 'pypdf' package is required to load PDF files. Install it with: pip install pypdf"
+        ) from exc
+
     if min_chunk_words < 1:
         min_chunk_words = 1
     if max_chunk_words < min_chunk_words:
