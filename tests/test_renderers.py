@@ -201,6 +201,84 @@ class TestWikiArticleStructure:
         assert "[[Cost of Goods Sold]]" in page_text
 
 
+class TestWikiRendererStructureSnapshot:
+    """
+    Snapshot-style guard: the wiki renderer's output structure must not drift.
+    A fixed input always produces pages containing the expected markdown skeleton.
+    """
+
+    # Both concepts share chunk-1 so co-occurrence linking fires for the
+    # wikilink test; chunk-2 gives Cost of Goods Sold a second source entry.
+    _GROUPED = {
+        "Inventory Turnover": [
+            Fact(id="1", concept="Inventory Turnover",
+                 content="Inventory Turnover is the number of times inventory is sold and replaced in a period.",
+                 source_chunk_id="doc.pdf::chunk-1"),
+            Fact(id="2", concept="Inventory Turnover",
+                 content="A higher ratio indicates faster inventory movement.",
+                 source_chunk_id="doc.pdf::chunk-1"),
+            Fact(id="3", concept="Inventory Turnover",
+                 content="Inventory Turnover = Cost of Goods Sold / Average Inventory.",
+                 source_chunk_id="doc.pdf::chunk-1"),
+            Fact(id="4", concept="Inventory Turnover",
+                 content="A low ratio may signal overstocking or weak demand.",
+                 source_chunk_id="doc.pdf::chunk-1"),
+        ],
+        "Cost of Goods Sold": [
+            Fact(id="5", concept="Cost of Goods Sold",
+                 content="Cost of Goods Sold is the direct cost of products sold during a period.",
+                 source_chunk_id="doc.pdf::chunk-1"),
+            Fact(id="6", concept="Cost of Goods Sold",
+                 content="Cost of Goods Sold is deducted from revenue to compute gross profit.",
+                 source_chunk_id="doc.pdf::chunk-2"),
+        ],
+    }
+
+    def _render(self) -> dict[str, str]:
+        return generate_pages_wiki(self._GROUPED)
+
+    def test_definition_appears_in_intro(self):
+        pages = self._render()
+        page = pages["Inventory Turnover"]
+        assert "number of times inventory is sold" in page.lower()
+
+    def test_at_least_one_content_section_header_present(self):
+        pages = self._render()
+        page = pages["Inventory Turnover"]
+        content_headers = {"## Key Takeaways", "## How It Works", "## Details", "## Overview"}
+        assert any(h in page for h in content_headers), (
+            f"No content section header found. Page starts:\n{page[:400]}"
+        )
+
+    def test_related_concepts_section_present(self):
+        pages = self._render()
+        page = pages["Inventory Turnover"]
+        assert "## Related Concepts" in page
+
+    def test_wikilink_to_related_concept_present(self):
+        pages = self._render()
+        page = pages["Inventory Turnover"]
+        assert "[[Cost of Goods Sold]]" in page
+
+    def test_source_frontmatter_present_when_source_is_filename(self):
+        pages = self._render()
+        page = pages["Inventory Turnover"]
+        assert page.startswith("---"), "Expected YAML frontmatter block at page start"
+
+    def test_no_raw_chunk_uuids_in_output(self):
+        pages = self._render()
+        for title, page in pages.items():
+            assert "::" not in page, f"Raw chunk source id leaked into page '{title}'"
+
+    def test_both_concepts_rendered(self):
+        pages = self._render()
+        assert "Inventory Turnover" in pages
+        assert "Cost of Goods Sold" in pages
+
+    def test_output_is_deterministic(self):
+        assert self._render() == self._render()
+
+
 class TestParallelRendererEquivalence:
     """Parallel rendering must produce identical output to sequential rendering."""
 

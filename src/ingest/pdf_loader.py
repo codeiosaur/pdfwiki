@@ -1,8 +1,9 @@
 # src/ingest/pdf_loader.py
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 from pathlib import Path
 import re
+import statistics
 import uuid
 
 # Typographic Unicode → ASCII replacements common in academic PDFs.
@@ -31,36 +32,23 @@ class Chunk:
     source: str
     chapter: str | None
 
-def load_pdf_chunks(
-    pdf_path: str,
+
+def _chunk_text(
+    full_text: str,
+    source_name: str,
     min_chunk_words: int = 800,
     max_chunk_words: int = 1200,
-) -> List[Chunk]:
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise ImportError(
-            "The 'pypdf' package is required to load PDF files. Install it with: pip install pypdf"
-        ) from exc
+) -> Tuple[List[Chunk], int]:
+    """
+    Split *full_text* into sentence-packed Chunks.
 
-    if min_chunk_words < 1:
-        min_chunk_words = 1
-    if max_chunk_words < min_chunk_words:
-        max_chunk_words = min_chunk_words
-
-    # Step 1: Load PDF and collect text from all pages.
-    reader = PdfReader(pdf_path)
-    page_texts: List[str] = []
-    for page in reader.pages:
-        page_texts.append(page.extract_text() or "")
-
-    full_text = "\n".join(page_texts)
-    full_text = full_text.translate(_UNICODE_REPLACEMENTS)
-
-    # Step 2: Split on sentence boundaries, then pack into roughly 800-1200 word chunks.
+    Returns ``(chunks, fallback_slices)`` where *fallback_slices* counts how
+    many chunks were produced by word-level fallback splitting (oversized
+    single sentences, or the whole-document fallback for structure-free text).
+    """
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", full_text) if s.strip()]
     chunks: List[Chunk] = []
-    source_name = Path(pdf_path).name
+    fallback_slices = 0
 
     current_sentences: List[str] = []
     current_word_count = 0
@@ -99,6 +87,7 @@ def load_pdf_chunks(
                         chapter=None,
                     )
                 )
+                fallback_slices += 1
             continue
 
         # Start a new chunk when current one is already in-range and next sentence would overflow.
@@ -128,5 +117,46 @@ def load_pdf_chunks(
                     chapter=None,
                 )
             )
+            fallback_slices += 1
+
+    return chunks, fallback_slices
+
+
+def load_pdf_chunks(
+    pdf_path: str,
+    min_chunk_words: int = 800,
+    max_chunk_words: int = 1200,
+) -> List[Chunk]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise ImportError(
+            "The 'pypdf' package is required to load PDF files. Install it with: pip install pypdf"
+        ) from exc
+
+    if min_chunk_words < 1:
+        min_chunk_words = 1
+    if max_chunk_words < min_chunk_words:
+        max_chunk_words = min_chunk_words
+
+    reader = PdfReader(pdf_path)
+    page_texts: List[str] = []
+    for page in reader.pages:
+        page_texts.append(page.extract_text() or "")
+
+    full_text = "\n".join(page_texts)
+    full_text = full_text.translate(_UNICODE_REPLACEMENTS)
+
+    source_name = Path(pdf_path).name
+    chunks, fallback_slices = _chunk_text(full_text, source_name, min_chunk_words, max_chunk_words)
+
+    if chunks:
+        word_counts = [len(c.text.split()) for c in chunks]
+        med = statistics.median(word_counts)
+        print(
+            f"Loaded {len(chunks)} chunks from \"{source_name}\" | "
+            f"words min/med/max={min(word_counts)}/{med:.0f}/{max(word_counts)} | "
+            f"fallback_slices={fallback_slices}"
+        )
 
     return chunks
