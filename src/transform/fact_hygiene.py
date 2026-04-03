@@ -10,6 +10,7 @@ from typing import Iterable
 import re
 
 from extract.fact_extractor import Fact
+from generate.classify import _looks_like_worked_example
 
 
 # Patterns that indicate answer-key/test-stem artifacts rather than reusable facts.
@@ -26,6 +27,8 @@ _FACT_NOISE_PATTERNS = [
 def _is_noise_fact(content: str) -> bool:
     text = (content or "").strip()
     if not text:
+        return True
+    if _looks_like_worked_example(text):
         return True
     return any(pattern.search(text) for pattern in _FACT_NOISE_PATTERNS)
 

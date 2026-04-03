@@ -3,7 +3,8 @@
 import pytest
 
 from transform.filter import is_valid_concept
-from transform.filter import filter_publishable_grouped_concepts
+from transform.filter import filter_publishable_grouped_concepts, filter_example_saturated_concepts
+from extract.fact_extractor import Fact
 
 
 @pytest.mark.parametrize("concept, expected", [
@@ -70,3 +71,40 @@ def test_filter_publishable_grouped_concepts_removes_internal_pages():
     assert "Canonicalize Concept Names" not in result
     assert "Inventory Turnover Ratio" in result
     assert "Balance Sheet" in result
+
+
+def test_filter_example_saturated_concepts_drops_example_only_groups():
+    # Create fake Fact objects where most facts are examples
+    f_example = Fact(id="f1", concept="X", content="The result was $1,234.", source_chunk_id="c1")
+    f_example2 = Fact(id="f2", concept="X", content="After the adjustment, the balance was $2,345.", source_chunk_id="c1")
+    f_good = Fact(id="f3", concept="Y", content="Inventory is reported on the balance sheet.", source_chunk_id="c2")
+
+    grouped = {
+        "Example Group": [f_example, f_example2],
+        "Good Group": [f_good],
+    }
+
+    filtered, dropped = filter_example_saturated_concepts(grouped, threshold=0.5)
+
+    assert "Example Group" not in filtered
+    assert "Good Group" in filtered
+    assert dropped == 1
+
+
+def test_filter_example_saturated_concepts_keeps_mixed_groups_with_non_example_facts():
+    f_example = Fact(id="f1", concept="Z", content="The result was $9,999.", source_chunk_id="c1")
+    f_non_example = Fact(
+        id="f2",
+        concept="Z",
+        content="Inventory turnover measures how quickly inventory is sold and replaced.",
+        source_chunk_id="c1",
+    )
+
+    grouped = {"Mixed Group": [f_example, f_non_example]}
+
+    filtered, dropped = filter_example_saturated_concepts(grouped, threshold=0.5)
+
+    assert dropped == 0
+    assert "Mixed Group" in filtered
+    assert len(filtered["Mixed Group"]) == 1
+    assert "turnover measures" in filtered["Mixed Group"][0].content.lower()

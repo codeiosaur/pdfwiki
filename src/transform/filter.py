@@ -1,5 +1,7 @@
 import re
-from typing import List
+from typing import List, Tuple
+
+from generate.classify import classify_fact, _is_low_signal_key_point, _looks_like_worked_example
 
 # Countries, regions, and geographic entities to reject
 COUNTRIES_REGIONS = {
@@ -193,3 +195,48 @@ def filter_publishable_grouped_concepts(grouped: dict[str, list]) -> dict[str, l
         for concept, facts in grouped.items()
         if is_valid_concept(concept)
     }
+
+
+def filter_example_saturated_concepts(grouped: dict[str, list], threshold: float = 0.7) -> Tuple[dict[str, list], int]:
+    """Remove or suppress concept groups dominated by example-like facts.
+
+    Behavior:
+    - Remove example-like facts from each concept group.
+    - Keep the concept if at least one non-example fact remains.
+    - Drop the concept only when all facts are example-like.
+
+    Returns a tuple of (filtered_grouped, dropped_count).
+    """
+    result: dict[str, list] = {}
+    dropped = 0
+    for concept, facts in grouped.items():
+        if not facts:
+            # Preserve empty buckets to allow other pruning logic to handle them
+            result[concept] = facts
+            continue
+        kept_facts = []
+        for f in facts:
+            content = f.content if hasattr(f, "content") else str(f)
+            # Treat facts as example-like if they are classified as examples
+            # or appear to be low-signal/worked-example content (numeric-heavy,
+            # short worksheet-style lines, or marker phrases).
+            is_example_like = (
+                classify_fact(content) == "example"
+                or _is_low_signal_key_point(content)
+                or _looks_like_worked_example(content)
+            )
+            if not is_example_like:
+                kept_facts.append(f)
+
+        # Keep concept with any surviving non-example facts.
+        if kept_facts:
+            result[concept] = kept_facts
+            continue
+
+        # If everything is example-like, drop the concept page.
+        if len(facts) > 0:
+            dropped += 1
+            continue
+
+        result[concept] = kept_facts
+    return result, dropped
