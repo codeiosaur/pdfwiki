@@ -155,6 +155,7 @@ def inject_wikilinks(
 def promote_all_facts_to_content(
     fact_contents: list[str],
     definition: str,
+    include_examples: bool = False,
 ) -> list[str]:
     """
     Return all facts that aren't the definition, aren't instructions,
@@ -178,6 +179,8 @@ def promote_all_facts_to_content(
             continue
         base_class = classify_fact(item)
         if base_class == "instruction":
+            continue
+        if not include_examples and base_class == "example":
             continue
 
         normalized = _normalize_text_for_compare(item)

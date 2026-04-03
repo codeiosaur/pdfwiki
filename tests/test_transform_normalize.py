@@ -95,13 +95,13 @@ class TestNormalizeGroupKeys:
     def _make_fact(self, concept, content="fact"):
         return Fact(id="x", concept=concept, content=content, source_chunk_id="c1")
 
-    def test_keeps_case_variants_separate_without_domain_mapping(self):
+    def test_case_variants_collapse_without_domain_mapping(self):
         grouped = {
             "fifo": [self._make_fact("fifo", "oldest cost")],
             "FIFO": [self._make_fact("FIFO", "inventory method")],
         }
         result = normalize_group_keys(grouped)
-        assert len(result) == 2
+        assert len(result) == 1
 
     def test_preserves_distinct_concepts(self):
         grouped = {
@@ -117,3 +117,13 @@ class TestNormalizeGroupKeys:
         result = normalize_group_keys(grouped)
         total = sum(len(v) for v in result.values())
         assert total == 3
+
+    def test_preposition_variants_collapse_to_single_group(self):
+        grouped = {
+            "Days Sales in Inventory": [self._make_fact("Days Sales in Inventory", "fact a")],
+            "Days Sales of Inventory": [self._make_fact("Days Sales of Inventory", "fact b")],
+        }
+        result = normalize_group_keys(grouped)
+        assert len(result) == 1
+        total = sum(len(v) for v in result.values())
+        assert total == 2
