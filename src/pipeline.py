@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Iterator, List, Optional
 import logging
 import os
+import queue
 import random
 import sys
+import threading
 import time
 
 from backend import LLMBackend
@@ -314,6 +316,136 @@ def run_pipeline_two_pass(
     p2_elapsed = time.perf_counter() - t0
     print(f"Pass 2 complete: {len(all_facts)} facts with concept names ({p2_elapsed:.0f}s)")
 
+    if not use_strict:
+        all_facts = _anchor_facts_to_seeds(all_facts, seeds)
+
+    p1_m = pass1_backend.metrics()
+    p2_m = pass2_backend.metrics()
+    PipelineMetrics(
+        total_chunks=len(chunks),
+        total_statements=len(all_statements),
+        total_facts=len(all_facts),
+        pass1_time_s=p1_elapsed,
+        pass2_time_s=p2_elapsed,
+        pass1_retries=p1_m.get("retry_count", 0),
+        pass1_fallback_hops=p1_m.get("fallback_hops", 0),
+        pass2_retries=p2_m.get("retry_count", 0),
+        pass2_fallback_hops=p2_m.get("fallback_hops", 0),
+    ).print_summary()
+
+    return all_facts
+
+
+def run_pipeline_streaming(
+    pdf_path: str,
+    pass1_backend: LLMBackend,
+    pass2_backend: LLMBackend,
+    batch_size: int = 2,
+    max_workers: int = 5,
+    max_chunks: Optional[int] = None,
+    seeds_file: Optional[str] = None,
+    pass1_batch_size: Optional[int] = None,
+    pass2_batch_size: Optional[int] = None,
+    pass1_max_workers: Optional[int] = None,
+    pass2_max_workers: Optional[int] = None,
+) -> List[Fact]:
+    """
+    Streaming variant of run_pipeline_two_pass.
+
+    Pass 1 batches are enqueued as they complete. Pass 2 begins consuming
+    immediately once seed resolution (Pass 1.5) finishes, without waiting
+    for the full statement list to be re-chunked. This eliminates the hard
+    barrier between Pass 1 and Pass 2.
+    """
+    _p1_batch = pass1_batch_size if pass1_batch_size is not None else batch_size
+    _p2_batch = pass2_batch_size if pass2_batch_size is not None else batch_size
+    _p1_workers = pass1_max_workers if pass1_max_workers is not None else max_workers
+    _p2_workers = pass2_max_workers if pass2_max_workers is not None else max_workers
+
+    chunks = load_pdf_chunks(pdf_path=pdf_path)
+    if isinstance(max_chunks, int) and max_chunks > 0:
+        chunks = chunks[:max_chunks]
+    chunk_batches = list(generate_chunk_batches(chunks, batch_size=_p1_batch))
+
+    statement_q: queue.Queue = queue.Queue()
+    seeds_ready = threading.Event()
+    seeds_holder: List = [None]   # written before seeds_ready is set; read after
+    all_statements: List[dict] = []
+    all_facts: List[Fact] = []
+
+    # ── Pass 2 consumer (runs in its own thread, unblocked by seeds_ready) ─
+    def _pass2_consumer() -> None:
+        seeds_ready.wait()
+        seeds = seeds_holder[0]
+        use_strict = getattr(pass2_backend, "is_openrouter", False) and bool(seeds)
+        if use_strict:
+            print("Pass 2 [streaming]: strict seed enforcement enabled")
+
+        p2_futures = []
+        with ThreadPoolExecutor(max_workers=_p2_workers) as executor:
+            while True:
+                batch = statement_q.get()
+                if batch is None:   # sentinel
+                    break
+                p2_futures.append(
+                    executor.submit(
+                        assign_concepts_to_statements, batch, pass2_backend,
+                        seeds, _p2_batch, use_strict,
+                    )
+                )
+            for future in as_completed(p2_futures):
+                try:
+                    all_facts.extend(future.result())
+                except Exception as exc:
+                    logging.warning("Streaming Pass 2 batch failed: %s", exc)
+
+    consumer_thread = threading.Thread(target=_pass2_consumer, daemon=True)
+    consumer_thread.start()
+
+    # ── Pass 1 producer ───────────────────────────────────────────────────
+    print(
+        f"Pass 1 [streaming]: Extracting raw statements from {len(chunks)} chunks "
+        f"[{pass1_backend.label}:{pass1_backend.model}]..."
+    )
+    t0 = time.perf_counter()
+    total_batches = len(chunk_batches)
+    completed_batches = 0
+    pace_batches = _should_pace_batches(pass1_backend)
+    with ThreadPoolExecutor(max_workers=_p1_workers) as executor:
+        futures = []
+        for index, batch in enumerate(chunk_batches):
+            if pace_batches and index > 0:
+                time.sleep(random.uniform(1.0, 3.0))
+            futures.append(executor.submit(extract_raw_statements_batched, batch, pass1_backend, _p1_batch))
+        for future in as_completed(futures):
+            try:
+                batch_statements = future.result()
+                all_statements.extend(batch_statements)
+                statement_q.put(batch_statements)
+                completed_batches += 1
+                print(
+                    f"  Pass 1 progress: {completed_batches}/{total_batches} batches complete "
+                    f"({len(all_statements)} raw statements)"
+                )
+            except Exception as exc:
+                logging.warning("Streaming Pass 1 batch failed: %s", exc)
+
+    p1_elapsed = time.perf_counter() - t0
+    print(f"Pass 1 [streaming] complete: {len(all_statements)} raw statements ({p1_elapsed:.0f}s)")
+
+    # ── Pass 1.5: seed resolution (needs all statements; unblocks consumer) ─
+    seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=seeds_file)
+    seeds_holder[0] = seeds
+    seeds_ready.set()
+    statement_q.put(None)  # sentinel: no more batches after this
+
+    # ── Wait for Pass 2 to drain ──────────────────────────────────────────
+    t2 = time.perf_counter()
+    consumer_thread.join()
+    p2_elapsed = time.perf_counter() - t2
+    print(f"Pass 2 [streaming] complete: {len(all_facts)} facts ({p2_elapsed:.0f}s)")
+
+    use_strict = getattr(pass2_backend, "is_openrouter", False) and bool(seeds)
     if not use_strict:
         all_facts = _anchor_facts_to_seeds(all_facts, seeds)
 

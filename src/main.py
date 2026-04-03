@@ -5,7 +5,7 @@ import time
 from backend import create_backend, create_pass_backends
 from cli import build_parser, apply_args_to_env
 from generate.renderers import generate_pages, generate_pages_wiki, render_pages_preview
-from pipeline import validate_pipeline_inputs, write_vault, run_pipeline_two_pass, run_pipeline_parallel
+from pipeline import validate_pipeline_inputs, write_vault, run_pipeline_two_pass, run_pipeline_streaming, run_pipeline_parallel
 from postprocess import (
     apply_canonical_map,
     check_evaluation_assertions,
@@ -45,6 +45,7 @@ def run_application(args) -> None:
     max_chunks = int(max_chunks_env) if max_chunks_env.isdigit() else None
 
     use_two_pass = os.getenv("TWO_PASS", "1").strip().lower() in {"1", "true", "yes"}
+    use_streaming = os.getenv("PIPELINE_STREAMING", "0").strip().lower() in {"1", "true", "yes"}
 
     print("=== LLM BACKEND CONFIGURATION ===")
     if use_two_pass:
@@ -60,21 +61,24 @@ def run_application(args) -> None:
 
     pipeline_start = time.time()
 
-    if use_two_pass:
+    _two_pass_kwargs = dict(
+        pass1_backend=pass1_backend,
+        pass2_backend=pass2_backend,
+        batch_size=batch_size,
+        max_workers=max_workers,
+        max_chunks=max_chunks,
+        seeds_file=args.seeds,
+        pass1_batch_size=pass1_batch_size,
+        pass2_batch_size=pass2_batch_size,
+        pass1_max_workers=pass1_max_workers,
+        pass2_max_workers=pass2_max_workers,
+    )
+    if use_two_pass and use_streaming:
+        print("\n=== USING STREAMING TWO-PASS PIPELINE ===")
+        all_facts = run_pipeline_streaming(demo_pdf_path, **_two_pass_kwargs)
+    elif use_two_pass:
         print("\n=== USING TWO-PASS PIPELINE ===")
-        all_facts = run_pipeline_two_pass(
-            demo_pdf_path,
-            pass1_backend=pass1_backend,
-            pass2_backend=pass2_backend,
-            batch_size=batch_size,
-            max_workers=max_workers,
-            max_chunks=max_chunks,
-            seeds_file=args.seeds,
-            pass1_batch_size=pass1_batch_size,
-            pass2_batch_size=pass2_batch_size,
-            pass1_max_workers=pass1_max_workers,
-            pass2_max_workers=pass2_max_workers,
-        )
+        all_facts = run_pipeline_two_pass(demo_pdf_path, **_two_pass_kwargs)
     else:
         print("\n=== USING LEGACY SINGLE-PASS PIPELINE ===")
         all_facts = run_pipeline_parallel(
