@@ -83,6 +83,12 @@ def _extract_tail_sections(wiki_page: str) -> str:
     return ""
 
 
+def _strip_thinking_tags(body: str) -> str:
+    """Remove <think>...</think> blocks emitted by reasoning models (e.g. Qwen3)."""
+    import re
+    return re.sub(r"<think>.*?</think>", "", body, flags=re.DOTALL).strip()
+
+
 def _strip_auto_sections(body: str) -> str:
     """Remove any Related Concepts / See Also / Sources section the LLM added."""
     for header in ["## Related Concepts", "## See Also", "## Sources"]:
@@ -165,6 +171,10 @@ def synthesize_pages(
             return display_title, fallback
 
         body = raw.strip()
+        body = _strip_thinking_tags(body)
+        if not body:
+            logging.warning("Synthesis response for '%s' was all thinking tokens, no content", concept)
+            return display_title, fallback
         body = _strip_auto_sections(body)
         body = _ensure_title_heading(body, display_title)
         body = inject_wikilinks(body, all_display_titles, display_title)
