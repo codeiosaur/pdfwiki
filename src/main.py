@@ -3,6 +3,7 @@ import os
 import time
 
 from backend import create_backend, create_pass_backends
+from backend.config import _load_dotenv
 from cli import build_parser, apply_args_to_env
 from generate.renderers import generate_pages, generate_pages_wiki, render_pages_preview
 from pipeline import validate_pipeline_inputs, write_vault, run_pipeline_two_pass, run_pipeline_streaming, run_pipeline_parallel
@@ -31,6 +32,7 @@ from transform.normalize import normalize_group_keys
 
 
 def run_application(args) -> None:
+    _load_dotenv()   # must run before any os.getenv() call
     demo_pdf_path = args.input or "./sample_accounting_openstax.pdf"
     output_path = Path(args.output)
     batch_size = int(os.getenv("PIPELINE_BATCH_SIZE", "4"))

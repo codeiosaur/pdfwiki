@@ -42,10 +42,11 @@ class PipelineMetrics:
     pass1_fallback_hops: int = 0
     pass2_retries: int = 0
     pass2_fallback_hops: int = 0
+    pass2_start_offset_s: Optional[float] = None   # seconds into P1 when P2 first dispatched
 
     def print_summary(self) -> None:
         print("\n=== PIPELINE METRICS ===")
-        rows = [
+        rows: list = [
             ("chunks", self.total_chunks),
             ("statements", self.total_statements),
             ("facts", self.total_facts),
@@ -56,6 +57,8 @@ class PipelineMetrics:
             ("pass2_retries", self.pass2_retries),
             ("pass2_fallback_hops", self.pass2_fallback_hops),
         ]
+        if self.pass2_start_offset_s is not None:
+            rows.append(("p2_start_offset_s", f"{self.pass2_start_offset_s:.0f}"))
         for label, value in rows:
             print(f"  {label:<22}: {value}")
 
@@ -352,10 +355,14 @@ def run_pipeline_streaming(
     """
     Streaming variant of run_pipeline_two_pass.
 
-    Pass 1 batches are enqueued as they complete. Pass 2 begins consuming
-    immediately once seed resolution (Pass 1.5) finishes, without waiting
-    for the full statement list to be re-chunked. This eliminates the hard
-    barrier between Pass 1 and Pass 2.
+    Pass 1 batches are enqueued as they complete and consumed by Pass 2 in
+    real time, with no hard barrier between the two passes:
+
+    - seeds_file provided: seeds are loaded before Pass 1 starts; Pass 2
+      consumer is live from the very first batch.
+    - seeds derived from statements: Pass 2 is unblocked once ~40% of Pass 1
+      batches have completed, then immediately processes the backlog and all
+      subsequent batches as they arrive.
     """
     _p1_batch = pass1_batch_size if pass1_batch_size is not None else batch_size
     _p2_batch = pass2_batch_size if pass2_batch_size is not None else batch_size
@@ -366,6 +373,7 @@ def run_pipeline_streaming(
     if isinstance(max_chunks, int) and max_chunks > 0:
         chunks = chunks[:max_chunks]
     chunk_batches = list(generate_chunk_batches(chunks, batch_size=_p1_batch))
+    total_batches = len(chunk_batches)
 
     statement_q: queue.Queue = queue.Queue()
     seeds_ready = threading.Event()
@@ -373,7 +381,23 @@ def run_pipeline_streaming(
     all_statements: List[dict] = []
     all_facts: List[Fact] = []
 
+    # ── Seed resolution ───────────────────────────────────────────────────
+    # When a seeds file is provided, load it now so Pass 2 can start with
+    # batch 1.  Otherwise, derive seeds at ~40% of Pass 1 batches.
+    if seeds_file:
+        seeds = resolve_seed_concepts([], pass2_backend, seeds_file=seeds_file)
+        seeds_holder[0] = seeds
+        seeds_ready.set()
+        seed_threshold: Optional[int] = None
+    else:
+        seed_threshold = max(1, int(total_batches * 0.4))
+
     # ── Pass 2 consumer (runs in its own thread, unblocked by seeds_ready) ─
+    # Accumulate raw statements from the queue into chunk_size blocks before
+    # dispatching, matching the barrier-mode batch sizing for quality parity.
+    chunk_size = max(_p2_batch * 4, 32)
+    p2_first_submit_time: List[Optional[float]] = [None]   # set when first batch fires
+
     def _pass2_consumer() -> None:
         seeds_ready.wait()
         seeds = seeds_holder[0]
@@ -382,20 +406,50 @@ def run_pipeline_streaming(
             print("Pass 2 [streaming]: strict seed enforcement enabled")
 
         p2_futures = []
+        pending: List[dict] = []
+        p2_batch_num = 0
+
+        def _dispatch(statements: List[dict], executor: ThreadPoolExecutor) -> None:
+            nonlocal p2_batch_num
+            if not statements:
+                return
+            p2_batch_num += 1
+            if p2_first_submit_time[0] is None:
+                p2_first_submit_time[0] = time.perf_counter()
+            print(
+                f"  Pass 2 [streaming]: dispatching batch {p2_batch_num} "
+                f"({len(statements)} statements)"
+            )
+            p2_futures.append(
+                executor.submit(
+                    assign_concepts_to_statements, statements, pass2_backend,
+                    seeds, _p2_batch, use_strict,
+                )
+            )
+
         with ThreadPoolExecutor(max_workers=_p2_workers) as executor:
             while True:
                 batch = statement_q.get()
                 if batch is None:   # sentinel
                     break
-                p2_futures.append(
-                    executor.submit(
-                        assign_concepts_to_statements, batch, pass2_backend,
-                        seeds, _p2_batch, use_strict,
-                    )
-                )
+                pending.extend(batch)
+                while len(pending) >= chunk_size:
+                    _dispatch(pending[:chunk_size], executor)
+                    pending = pending[chunk_size:]
+
+            # Flush any remainder after sentinel
+            _dispatch(pending, executor)
+
+            completed_p2 = 0
             for future in as_completed(p2_futures):
                 try:
-                    all_facts.extend(future.result())
+                    results = future.result()
+                    all_facts.extend(results)
+                    completed_p2 += 1
+                    print(
+                        f"  Pass 2 [streaming]: batch {completed_p2}/{p2_batch_num} complete "
+                        f"({len(results)} facts, {len(all_facts)} total)"
+                    )
                 except Exception as exc:
                     logging.warning("Streaming Pass 2 batch failed: %s", exc)
 
@@ -408,8 +462,8 @@ def run_pipeline_streaming(
         f"[{pass1_backend.label}:{pass1_backend.model}]..."
     )
     t0 = time.perf_counter()
-    total_batches = len(chunk_batches)
     completed_batches = 0
+    seeds_derived = seeds_ready.is_set()   # True already when seeds_file was used
     pace_batches = _should_pace_batches(pass1_backend)
     with ThreadPoolExecutor(max_workers=_p1_workers) as executor:
         futures = []
@@ -429,20 +483,35 @@ def run_pipeline_streaming(
                 )
             except Exception as exc:
                 logging.warning("Streaming Pass 1 batch failed: %s", exc)
+                continue
+
+            # Mid-stream seed derivation: unblock consumer once threshold reached
+            if not seeds_derived and seed_threshold and completed_batches >= seed_threshold:
+                print(
+                    f"  Pass 1.5 [streaming]: deriving seeds at {completed_batches}/{total_batches} batches..."
+                )
+                seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=None)
+                seeds_holder[0] = seeds
+                seeds_ready.set()
+                seeds_derived = True
 
     p1_elapsed = time.perf_counter() - t0
     print(f"Pass 1 [streaming] complete: {len(all_statements)} raw statements ({p1_elapsed:.0f}s)")
 
-    # ── Pass 1.5: seed resolution (needs all statements; unblocks consumer) ─
-    seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=seeds_file)
-    seeds_holder[0] = seeds
-    seeds_ready.set()
+    # Safety: if threshold was never reached (e.g. all batches failed), unblock now
+    if not seeds_ready.is_set():
+        seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=None)
+        seeds_holder[0] = seeds
+        seeds_ready.set()
+
     statement_q.put(None)  # sentinel: no more batches after this
 
     # ── Wait for Pass 2 to drain ──────────────────────────────────────────
-    t2 = time.perf_counter()
     consumer_thread.join()
-    p2_elapsed = time.perf_counter() - t2
+    p2_end = time.perf_counter()
+    p2_elapsed = (p2_end - p2_first_submit_time[0]) if p2_first_submit_time[0] else 0.0
+    # How many seconds into Pass 1 did Pass 2 first dispatch?
+    p2_start_offset_s = (p2_first_submit_time[0] - t0) if p2_first_submit_time[0] else p1_elapsed
     print(f"Pass 2 [streaming] complete: {len(all_facts)} facts ({p2_elapsed:.0f}s)")
 
     use_strict = getattr(pass2_backend, "is_openrouter", False) and bool(seeds)
@@ -461,6 +530,7 @@ def run_pipeline_streaming(
         pass1_fallback_hops=p1_m.get("fallback_hops", 0),
         pass2_retries=p2_m.get("retry_count", 0),
         pass2_fallback_hops=p2_m.get("fallback_hops", 0),
+        pass2_start_offset_s=p2_start_offset_s,
     ).print_summary()
 
     return all_facts
