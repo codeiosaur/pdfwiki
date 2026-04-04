@@ -77,7 +77,7 @@ passes:
 #   PIPELINE_STREAMING=1              # Local P1 + remote P2 — overlap saves significant time
 #   PIPELINE_SYNTHESIS=1
 #   PIPELINE_SYNTHESIS_WORKERS=4      # Pass 3 is local
-#   OLLAMA_NUM_PARALLEL=6             # Set in shell
+#   OLLAMA_NUM_PARALLEL=6             # Set in shell. (Adjust as needed.)
 # =============================================================================
 
 # backends:
@@ -86,14 +86,14 @@ passes:
 #     model: gemma3:4b
 #     max_tokens: 4096
 #     num_ctx: 4096
-#     workers: 4
+#     workers: 3
 #
 #   local-classify:
 #     base_url: http://localhost:11434/v1
-#     model: qwen3:8b
+#     model: llama3.1:8b
 #     max_tokens: 4096
 #     num_ctx: 4096
-#     workers: 4
+#     workers: 3
 #
 #   remote-classify:
 #     base_url: https://openrouter.ai/api/v1
