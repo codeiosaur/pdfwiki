@@ -206,8 +206,8 @@ Rules:
 - Each statement must be ONE complete, self-contained factual claim.
 - Write clear sentences a student could study from.
 - Include definitions, relationships between concepts, rules, exceptions, and comparisons.
-- Include formula descriptions in plain English (e.g. 'Inventory turnover is calculated by dividing cost of goods sold by average inventory').
-- Skip worked examples with specific dollar amounts.
+- When a formula or mathematical relationship is present, extract it as a concise symbolic statement (e.g. 'X Ratio = A ÷ B') AND as a plain-English description. These are two separate statements.
+- Include brief self-contained worked examples that show how a concept applies (e.g. 'Under method X, if input is Y, output is Z'). Omit multi-step worksheet calculations that merely repeat the same arithmetic.
 - Skip instructions ("calculate...", "determine...", "prepare...").
 - Skip figure/table references and page numbers.
 - Skip statements where a concept is only referenced as a passing example or analogy. Extract statements that explain how or why something works, not merely that something exists.

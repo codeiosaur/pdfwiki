@@ -165,16 +165,19 @@ def create_backend(label: str = "default") -> LLMBackend:
     return _create_backend_from_config(config)
 
 
-def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
+def create_pass_backends() -> tuple[LLMBackend, LLMBackend, LLMBackend]:
     """
-    Create separate backends for Pass 1 (extraction) and Pass 2 (concept assignment).
+    Create separate backends for Pass 1 (extraction), Pass 2 (concept assignment),
+    and Pass 3 (synthesis).
 
-    If PASS1_* or PASS2_* env vars are set, those override the global LLM_* vars
-    for that pass.  This enables hybrid mode (e.g., local extraction + API assignment).
+    If PASS1_*/PASS2_*/PASS3_* env vars are set, those override the global LLM_*
+    vars for that pass.  All three passes fall back to LLM_* globals when their
+    PASS*_* vars are absent.
 
     Environment variables (all optional — fall back to LLM_* globals):
         PASS1_PROVIDER, PASS1_BASE_URL, PASS1_MODEL
         PASS2_PROVIDER, PASS2_BASE_URL, PASS2_MODEL
+        PASS3_PROVIDER, PASS3_BASE_URL, PASS3_MODEL
     """
     global_provider = get_env("LLM_PROVIDER", _DEFAULT_PROVIDER)
     global_base_url = get_env("LLM_BASE_URL", _DEFAULT_BASE_URL)
@@ -238,4 +241,31 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend]:
             pass2.set_fallback_models(fallback_models)
             print(f"  [pass2-assign] Fallback models: {fallback_models}")
 
-    return pass1, pass2
+    # Pass 3: synthesis (falls back to LLM_* globals, same as Pass 1 and Pass 2)
+    p3_provider = get_env("PASS3_PROVIDER", global_provider)
+    p3_base_url = get_env("PASS3_BASE_URL", global_base_url)
+    p3_model = get_env("PASS3_MODEL", global_model)
+    p3_max_tokens_raw = get_env("PASS3_MAX_TOKENS", "")
+    p3_max_tokens = int(p3_max_tokens_raw) if p3_max_tokens_raw.isdigit() else global_max_tokens
+    p3_openrouter_zdr = _env_flag("PASS3_ZDR", default=global_openrouter_zdr)
+
+    p3_config = _build_config(
+        p3_provider,
+        p3_base_url,
+        p3_model,
+        label="pass3-synthesize",
+        max_tokens=p3_max_tokens,
+        openrouter_zdr=p3_openrouter_zdr,
+    )
+    log_backend_config("pass3-synthesize", p3_provider, p3_base_url, p3_model, p3_config.api_key)
+    pass3 = _create_backend_from_config(p3_config)
+
+    # Configure fallback models for Pass 3 (OpenRouter-specific)
+    p3_fallback_models_raw = get_env("PASS3_FALLBACK_MODELS", "")
+    if p3_fallback_models_raw.strip() and getattr(pass3, "is_openrouter", False):
+        p3_fallback_models = [m.strip() for m in p3_fallback_models_raw.split(",") if m.strip()]
+        if p3_fallback_models:
+            pass3.set_fallback_models(p3_fallback_models)
+            print(f"  [pass3-synthesize] Fallback models: {p3_fallback_models}")
+
+    return pass1, pass2, pass3
