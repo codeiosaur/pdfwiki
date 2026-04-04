@@ -78,6 +78,7 @@ class OpenAICompatBackend(LLMBackend):
         )
         self._is_openrouter = _is_openrouter(config.base_url)
         self._is_ollama = _is_ollama(config.base_url)
+        self._ollama_num_ctx: Optional[int] = config.ollama_num_ctx if self._is_ollama else None
         self._fallback_models: list[str] = []
         # Local endpoints (Ollama, LM Studio) rarely hit 429s and recover quickly.
         # Use a shorter initial backoff for them; keep the longer default for OpenRouter.
@@ -128,8 +129,11 @@ class OpenAICompatBackend(LLMBackend):
         """
         tokens = max_tokens if max_tokens is not None else self._config.max_tokens
 
-        # Build extra_body for OpenRouter-specific features
+        # Build extra_body for provider-specific features
         extra_body: dict[str, Any] = {}
+
+        if self._is_ollama and self._ollama_num_ctx is not None:
+            extra_body["options"] = {"num_ctx": self._ollama_num_ctx}
 
         if self._is_openrouter:
             # Model fallbacks
@@ -192,6 +196,10 @@ class OpenAICompatBackend(LLMBackend):
                 kwargs.pop("extra_body", None)
 
             backoff = self._initial_backoff
+            # Once we detect that a thinking model consumed all tokens with reasoning
+            # but produced no structured output, we drop response_format and retry
+            # with prompt-only JSON guidance.  This flag ensures we only do it once.
+            _schema_dropped = False
 
             for attempt in range(_MAX_RETRIES + 1):
                 try:
@@ -213,11 +221,13 @@ class OpenAICompatBackend(LLMBackend):
                         # Reasoning models (e.g. Nemotron, DeepSeek-R1) spend tokens on
                         # chain-of-thought that is counted in usage but not returned as content.
                         hints: list[str] = []
+                        _reasoning_detected = False
                         if message is not None:
                             if getattr(message, "refusal", None):
                                 hints.append("model refused")
                             reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
                             if reasoning:
+                                _reasoning_detected = True
                                 hints.append("model produced reasoning tokens but no output — try a non-reasoning model")
                         usage = getattr(response, "usage", None)
                         if usage:
@@ -225,9 +235,20 @@ class OpenAICompatBackend(LLMBackend):
                             if completion_tokens:
                                 hints.append(f"{completion_tokens} completion tokens counted but content empty")
                         hint_str = f" ({'; '.join(hints)})" if hints else ""
-                        raise LLMBackendError(
+                        exc = LLMBackendError(
                             f"[{self.label}] Empty response from {model}{hint_str}"
                         )
+                        # Thinking model + json_schema: drop the schema constraint and
+                        # retry immediately so the model can emit JSON in its text output.
+                        # _parse_json_array handles preamble/fence-wrapped output.
+                        if _reasoning_detected and not _schema_dropped and "response_format" in kwargs:
+                            kwargs.pop("response_format")
+                            _schema_dropped = True
+                            print(f"  [{tag}] Thinking model produced no structured output on {model} "
+                                  f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}), retrying without schema constraint...")
+                            self._retry_count += 1
+                            continue
+                        raise exc
                     return content
 
                 except Exception as exc:

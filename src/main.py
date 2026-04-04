@@ -3,6 +3,7 @@ import os
 import time
 
 from backend import create_backend, create_pass_backends
+from backend.factory import create_pass_backends_from_config, backends_config_path, warn_deprecated_env_vars
 from backend.config import _load_dotenv
 from cli import build_parser, apply_args_to_env
 from generate.renderers import generate_pages, generate_pages_wiki, render_pages_preview
@@ -50,11 +51,18 @@ def run_application(args) -> None:
     use_two_pass = os.getenv("TWO_PASS", "1").strip().lower() in {"1", "true", "yes"}
     use_streaming = os.getenv("PIPELINE_STREAMING", "0").strip().lower() in {"1", "true", "yes"}
 
-    print("=== LLM BACKEND CONFIGURATION ===")
-    if use_two_pass:
+    json_path = backends_config_path()
+    if json_path:
+        pass1_backend, pass2_backend, pass3_backend = create_pass_backends_from_config(json_path)
+        canonicalize_backend = pass2_backend
+    elif use_two_pass:
+        print("=== LLM BACKEND CONFIGURATION ===")
+        warn_deprecated_env_vars()
         pass1_backend, pass2_backend, pass3_backend = create_pass_backends()
         canonicalize_backend = pass2_backend
     else:
+        print("=== LLM BACKEND CONFIGURATION ===")
+        warn_deprecated_env_vars()
         backend = create_backend(label="single-pass")
         pass1_backend = backend
         pass2_backend = backend

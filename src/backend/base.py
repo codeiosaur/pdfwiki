@@ -29,6 +29,10 @@ class BackendConfig:
         label:      Human-readable name for logging (e.g. 'local', 'api').
         openrouter_zdr: When True and the backend targets OpenRouter, request
                         Zero Data Retention for each call.
+        ollama_num_ctx: When set, overrides Ollama's default context window
+                        (num_ctx) per backend.  Ignored for non-Ollama endpoints.
+                        Useful when Pass 3 synthesis needs more room for thinking
+                        tokens than Pass 1 extraction.
     """
     provider: str
     base_url: str
@@ -38,6 +42,7 @@ class BackendConfig:
     max_tokens: int = 800
     label: str = ""
     openrouter_zdr: bool = False
+    ollama_num_ctx: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.provider not in ("openai_compat", "anthropic"):
