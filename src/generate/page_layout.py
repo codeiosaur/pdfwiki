@@ -65,7 +65,7 @@ def build_wiki_page_lines(
         lines.extend(bullet_section("Key Takeaways", details + interpretations))
 
     if include_examples:
-        lines.extend(bullet_section("Example", examples))
+        lines.extend(bullet_section("Worked Example", examples))
     lines.extend(bullet_section("Cautions", cautions))
 
     lines.extend(["", "---", "", "## Related Concepts"])

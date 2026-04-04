@@ -31,10 +31,18 @@ _MAX_BACKOFF_SECONDS = 60.0
 # OpenRouter detection
 _OPENROUTER_HOSTS = {"openrouter.ai"}
 
+# Ollama default port — used to enable structured output enforcement
+_OLLAMA_DEFAULT_PORT = "11434"
+
 
 def _is_openrouter(base_url: str) -> bool:
     """Check if the base URL points to OpenRouter."""
     return any(host in base_url.lower() for host in _OPENROUTER_HOSTS)
+
+
+def _is_ollama(base_url: str) -> bool:
+    """Check if the base URL points to a local Ollama instance (default port)."""
+    return _OLLAMA_DEFAULT_PORT in base_url
 
 
 class OpenAICompatBackend(LLMBackend):
@@ -69,6 +77,7 @@ class OpenAICompatBackend(LLMBackend):
             api_key=api_key,
         )
         self._is_openrouter = _is_openrouter(config.base_url)
+        self._is_ollama = _is_ollama(config.base_url)
         self._fallback_models: list[str] = []
         # Local endpoints (Ollama, LM Studio) rarely hit 429s and recover quickly.
         # Use a shorter initial backoff for them; keep the longer default for OpenRouter.
@@ -143,12 +152,13 @@ class OpenAICompatBackend(LLMBackend):
         }
 
         # Structured output support
-        if json_schema is not None and self._is_openrouter:
-            # OpenRouter enforces the schema server-side and handles
-            # response healing.  For non-OpenRouter providers (Ollama,
-            # LM Studio, etc.), we skip schema injection entirely —
-            # the prompts already contain JSON format instructions and
-            # the _parse_json_array fallback parser handles any preamble.
+        if json_schema is not None and (self._is_openrouter or self._is_ollama):
+            # OpenRouter and Ollama (0.5+) both enforce the schema server-side
+            # via response_format json_schema, which constrains token generation
+            # to match the array structure.  This prevents fence-wrapped output
+            # and object-instead-of-array failures common in smaller models.
+            # Other providers fall through: prompts contain format instructions
+            # and _parse_json_array handles any preamble or fences.
             kwargs["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {

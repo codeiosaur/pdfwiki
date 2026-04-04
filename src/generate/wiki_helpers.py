@@ -173,14 +173,17 @@ def promote_all_facts_to_content(
             continue
         if is_question_prompt(item):
             continue
-        if _is_low_signal_key_point(item):
-            continue
-        if _normalize_text_for_compare(item) == definition_norm:
-            continue
         base_class = classify_fact(item)
         if base_class == "instruction":
             continue
-        if not include_examples and base_class == "example":
+        if base_class == "example":
+            if not include_examples:
+                continue
+            # Don't apply the low-signal guard to examples — numeric density
+            # and short length are expected in worked examples.
+        elif _is_low_signal_key_point(item):
+            continue
+        if _normalize_text_for_compare(item) == definition_norm:
             continue
 
         normalized = _normalize_text_for_compare(item)
