@@ -165,7 +165,7 @@ def run_application(args) -> None:
     if use_synthesis:
         print(
             f"\nPass 3 [synthesis]: Rewriting {len(pages)} pages "
-            f"[{canonicalize_backend.label}:{canonicalize_backend.model}]..."
+            f"[{pass3_backend.label}:{pass3_backend.model}]..."
         )
         pages = synthesize_pages(
             final_grouped,
