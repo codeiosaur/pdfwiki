@@ -56,6 +56,7 @@ Write the page body in Markdown:
 - Link related concepts using [[wikilinks]] on first mention in the body text.
 - Do NOT output a ## Related Concepts, ## See Also, ## Sources section, or YAML frontmatter — those are appended automatically.
 - Do NOT invent facts, examples, or numbers not in the source list above.
+- Do NOT reference source facts by number (e.g. "(fact 3)", "(facts 2 and 5)") — write prose that integrates the information naturally.
 
 Output ONLY the Markdown page body, starting with # {display_title}."""
 
@@ -85,8 +86,12 @@ def _extract_tail_sections(wiki_page: str) -> str:
 
 def _strip_thinking_tags(body: str) -> str:
     """Remove <think>...</think> blocks emitted by reasoning models (e.g. Qwen3)."""
-    import re
     return re.sub(r"<think>.*?</think>", "", body, flags=re.DOTALL).strip()
+
+
+def _strip_fact_citations(body: str) -> str:
+    """Remove (fact N) / (facts N, M) citations the LLM may leave from the numbered prompt."""
+    return re.sub(r"\s*\(facts?\s[\d,\s]+\)", "", body)
 
 
 def _strip_auto_sections(body: str) -> str:
@@ -172,6 +177,7 @@ def synthesize_pages(
 
         body = raw.strip()
         body = _strip_thinking_tags(body)
+        body = _strip_fact_citations(body)
         if not body:
             logging.warning("Synthesis response for '%s' was all thinking tokens, no content", concept)
             return display_title, fallback
