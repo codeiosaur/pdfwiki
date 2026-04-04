@@ -352,10 +352,14 @@ def run_pipeline_streaming(
     """
     Streaming variant of run_pipeline_two_pass.
 
-    Pass 1 batches are enqueued as they complete. Pass 2 begins consuming
-    immediately once seed resolution (Pass 1.5) finishes, without waiting
-    for the full statement list to be re-chunked. This eliminates the hard
-    barrier between Pass 1 and Pass 2.
+    Pass 1 batches are enqueued as they complete and consumed by Pass 2 in
+    real time, with no hard barrier between the two passes:
+
+    - seeds_file provided: seeds are loaded before Pass 1 starts; Pass 2
+      consumer is live from the very first batch.
+    - seeds derived from statements: Pass 2 is unblocked once ~40% of Pass 1
+      batches have completed, then immediately processes the backlog and all
+      subsequent batches as they arrive.
     """
     _p1_batch = pass1_batch_size if pass1_batch_size is not None else batch_size
     _p2_batch = pass2_batch_size if pass2_batch_size is not None else batch_size
@@ -366,12 +370,24 @@ def run_pipeline_streaming(
     if isinstance(max_chunks, int) and max_chunks > 0:
         chunks = chunks[:max_chunks]
     chunk_batches = list(generate_chunk_batches(chunks, batch_size=_p1_batch))
+    total_batches = len(chunk_batches)
 
     statement_q: queue.Queue = queue.Queue()
     seeds_ready = threading.Event()
     seeds_holder: List = [None]   # written before seeds_ready is set; read after
     all_statements: List[dict] = []
     all_facts: List[Fact] = []
+
+    # ── Seed resolution ───────────────────────────────────────────────────
+    # When a seeds file is provided, load it now so Pass 2 can start with
+    # batch 1.  Otherwise, derive seeds at ~40% of Pass 1 batches.
+    if seeds_file:
+        seeds = resolve_seed_concepts([], pass2_backend, seeds_file=seeds_file)
+        seeds_holder[0] = seeds
+        seeds_ready.set()
+        seed_threshold: Optional[int] = None
+    else:
+        seed_threshold = max(1, int(total_batches * 0.4))
 
     # ── Pass 2 consumer (runs in its own thread, unblocked by seeds_ready) ─
     def _pass2_consumer() -> None:
@@ -408,8 +424,8 @@ def run_pipeline_streaming(
         f"[{pass1_backend.label}:{pass1_backend.model}]..."
     )
     t0 = time.perf_counter()
-    total_batches = len(chunk_batches)
     completed_batches = 0
+    seeds_derived = seeds_ready.is_set()   # True already when seeds_file was used
     pace_batches = _should_pace_batches(pass1_backend)
     with ThreadPoolExecutor(max_workers=_p1_workers) as executor:
         futures = []
@@ -429,14 +445,27 @@ def run_pipeline_streaming(
                 )
             except Exception as exc:
                 logging.warning("Streaming Pass 1 batch failed: %s", exc)
+                continue
+
+            # Mid-stream seed derivation: unblock consumer once threshold reached
+            if not seeds_derived and seed_threshold and completed_batches >= seed_threshold:
+                print(
+                    f"  Pass 1.5 [streaming]: deriving seeds at {completed_batches}/{total_batches} batches..."
+                )
+                seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=None)
+                seeds_holder[0] = seeds
+                seeds_ready.set()
+                seeds_derived = True
 
     p1_elapsed = time.perf_counter() - t0
     print(f"Pass 1 [streaming] complete: {len(all_statements)} raw statements ({p1_elapsed:.0f}s)")
 
-    # ── Pass 1.5: seed resolution (needs all statements; unblocks consumer) ─
-    seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=seeds_file)
-    seeds_holder[0] = seeds
-    seeds_ready.set()
+    # Safety: if threshold was never reached (e.g. all batches failed), unblock now
+    if not seeds_ready.is_set():
+        seeds = resolve_seed_concepts(all_statements, pass2_backend, seeds_file=None)
+        seeds_holder[0] = seeds
+        seeds_ready.set()
+
     statement_q.put(None)  # sentinel: no more batches after this
 
     # ── Wait for Pass 2 to drain ──────────────────────────────────────────
