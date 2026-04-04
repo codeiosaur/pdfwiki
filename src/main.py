@@ -6,6 +6,7 @@ from backend import create_backend, create_pass_backends
 from backend.config import _load_dotenv
 from cli import build_parser, apply_args_to_env
 from generate.renderers import generate_pages, generate_pages_wiki, render_pages_preview
+from generate.synthesize import synthesize_pages
 from pipeline import validate_pipeline_inputs, write_vault, run_pipeline_two_pass, run_pipeline_streaming, run_pipeline_parallel
 from postprocess import (
     apply_canonical_map,
@@ -41,6 +42,8 @@ def run_application(args) -> None:
     pass2_max_workers = int(os.getenv("PASS2_MAX_WORKERS", str(max_workers)))
     render_workers = int(os.getenv("PIPELINE_RENDER_WORKERS", "1"))
     enrich_workers = int(os.getenv("PIPELINE_ENRICH_WORKERS", "1"))
+    use_synthesis = os.getenv("PIPELINE_SYNTHESIS", "0").strip().lower() in {"1", "true", "yes"}
+    synthesis_workers = int(os.getenv("PIPELINE_SYNTHESIS_WORKERS", "1"))
     max_chunks_env = os.getenv("PIPELINE_MAX_CHUNKS", "").strip()
     max_chunks = int(max_chunks_env) if max_chunks_env.isdigit() else None
 
@@ -49,12 +52,13 @@ def run_application(args) -> None:
 
     print("=== LLM BACKEND CONFIGURATION ===")
     if use_two_pass:
-        pass1_backend, pass2_backend = create_pass_backends()
+        pass1_backend, pass2_backend, pass3_backend = create_pass_backends()
         canonicalize_backend = pass2_backend
     else:
         backend = create_backend(label="single-pass")
         pass1_backend = backend
         pass2_backend = backend
+        pass3_backend = backend
         canonicalize_backend = backend
 
     validate_pipeline_inputs(demo_pdf_path, output_path, seeds_file=args.seeds)
@@ -157,6 +161,19 @@ def run_application(args) -> None:
     print(f"\nGenerated {len(pages)} concept pages ({mode_label} mode)")
     if skipped_pages:
         print(f"Skipped {skipped_pages} empty/low-signal pages")
+
+    if use_synthesis:
+        print(
+            f"\nPass 3 [synthesis]: Rewriting {len(pages)} pages "
+            f"[{canonicalize_backend.label}:{canonicalize_backend.model}]..."
+        )
+        pages = synthesize_pages(
+            final_grouped,
+            backend=pass3_backend,
+            wiki_pages=pages,
+            workers=synthesis_workers,
+        )
+        print(f"Pass 3 [synthesis]: {len(pages)} pages written")
 
     preview = render_pages_preview(pages, max_pages=2)
     if preview:
