@@ -1,31 +1,23 @@
 """
-Backend factory — builds LLM backend instances from environment variables.
+Backend factory — builds LLM backend instances from environment variables or
+a backends.json config file.
 
-Supports three modes controlled by environment variables:
+Supports two configuration modes:
 
-  LOCAL ONLY (default):
-    LLM_PROVIDER=openai_compat
-    LLM_BASE_URL=http://localhost:11434/v1
-    LLM_MODEL=llama3.1:8b
+  ENV VARS (legacy, still supported):
+    PASS1_PROVIDER, PASS1_BASE_URL, PASS1_MODEL, ...
+    PASS2_PROVIDER, PASS2_BASE_URL, PASS2_MODEL, ...
+    PASS3_PROVIDER, PASS3_BASE_URL, PASS3_MODEL, ...
 
-  API ONLY:
-    LLM_PROVIDER=anthropic
-    LLM_MODEL=claude-haiku-4-5-20251001
-    ANTHROPIC_API_KEY=sk-ant-...
+  backends.json (preferred — supports multiple backends per pass):
+    See backends.json.example for format.  When backends.json exists in the
+    working directory, it takes precedence over PASS*_* env vars.
 
-  HYBRID (local extraction, API for concept assignment):
-    PASS1_PROVIDER=openai_compat
-    PASS1_BASE_URL=http://localhost:11434/v1
-    PASS1_MODEL=llama3.1:8b
-    PASS2_PROVIDER=anthropic
-    PASS2_MODEL=claude-haiku-4-5-20251001
-    ANTHROPIC_API_KEY=sk-ant-...
-
-When PASS1_*/PASS2_* variables are set, they override the global LLM_*
-variables for that specific pass.  This lets users run extraction locally
-and concept assignment via API.
+When backends.json assigns multiple backends to a pass, calls are distributed
+round-robin via BackendPool, giving each backend an equal share of batches.
 """
 
+import os
 from typing import Optional
 
 from backend.base import BackendConfig, LLMBackend, LLMBackendError
@@ -48,6 +40,25 @@ _DEFAULT_MAX_TOKENS = 4096
 def _default_max_tokens() -> int:
     """Return the default max_tokens for all endpoints."""
     return _DEFAULT_MAX_TOKENS
+
+
+# ── Deprecation warning ───────────────────────────────────────────────
+
+def warn_deprecated_env_vars() -> None:
+    """
+    Print a tip suggesting backends.yaml when the user is configuring topology
+    via env vars alone (no backends.yaml present).
+
+    This is not a deprecation — env vars are fully supported.  backends.yaml
+    just unlocks features that env vars can't express (multi-backend pools,
+    named backends, per-backend ZDR/fallbacks).
+    """
+    print(
+        "\n  [config] Tip: create a backends.yaml for multi-backend pools, named\n"
+        "  backends, and per-backend ZDR/fallback_models.  Env vars still work\n"
+        "  fine for simple single-backend-per-pass setups.\n"
+        "  See backends.yaml.example for the format.\n"
+    )
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -98,6 +109,7 @@ def _build_config(
     max_tokens: Optional[int] = None,
     temperature: float = _DEFAULT_TEMPERATURE,
     openrouter_zdr: bool = False,
+    ollama_num_ctx: Optional[int] = None,
 ) -> BackendConfig:
     """Build a BackendConfig, resolving the API key if not provided."""
     if api_key is None:
@@ -118,6 +130,7 @@ def _build_config(
         max_tokens=max_tokens,
         label=label,
         openrouter_zdr=openrouter_zdr,
+        ollama_num_ctx=ollama_num_ctx,
     )
 
 
@@ -269,3 +282,191 @@ def create_pass_backends() -> tuple[LLMBackend, LLMBackend, LLMBackend]:
             print(f"  [pass3-synthesize] Fallback models: {p3_fallback_models}")
 
     return pass1, pass2, pass3
+
+
+# ── backends.yaml loader ──────────────────────────────────────────────
+
+def _build_backend_from_spec(spec: dict, name: str) -> LLMBackend:
+    """
+    Build a single LLMBackend from a backends.yaml backend spec dict.
+
+    Required fields: base_url, model
+    Optional fields: provider, api_key_env, max_tokens, temperature, fallback_models, zdr,
+                     num_ctx (Ollama only: overrides default context window)
+    """
+    base_url = spec.get("base_url", _DEFAULT_BASE_URL)
+    model = spec.get("model", _DEFAULT_MODEL)
+
+    # Infer provider from spec if not explicit
+    if spec.get("provider") == "anthropic" or "anthropic" in base_url:
+        provider = "anthropic"
+    elif spec.get("provider"):
+        provider = spec["provider"]
+    else:
+        provider = "openai_compat"
+
+    # API key: read from the named env var, or fall back to standard key resolution
+    api_key_env = spec.get("api_key_env")
+    api_key = get_env_secret(api_key_env) if api_key_env else _resolve_api_key(provider)
+
+    max_tokens = spec.get("max_tokens") or _default_max_tokens()
+    temperature = spec.get("temperature", _DEFAULT_TEMPERATURE)
+    zdr = bool(spec.get("zdr", False))
+    num_ctx = spec.get("num_ctx") or None
+
+    config = _build_config(
+        provider, base_url, model,
+        label=name,
+        api_key=api_key,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        openrouter_zdr=zdr,
+        ollama_num_ctx=int(num_ctx) if num_ctx else None,
+    )
+    log_backend_config(name, provider, base_url, model, config.api_key)
+    backend = _create_backend_from_config(config)
+
+    fallback_models = spec.get("fallback_models", [])
+    if fallback_models and getattr(backend, "is_openrouter", False):
+        backend.set_fallback_models(fallback_models)
+        print(f"  [{name}] Fallback models: {fallback_models}")
+
+    return backend
+
+
+def _build_pass_env_override(
+    pass_num: int,
+    label: str,
+    global_provider: str,
+    global_base_url: str,
+    global_model: str,
+    global_max_tokens: Optional[int],
+    global_zdr: bool,
+) -> LLMBackend:
+    """Build a single backend for a pass entirely from PASS{N}_* env vars."""
+    prefix = f"PASS{pass_num}"
+    provider = get_env(f"{prefix}_PROVIDER", global_provider)
+    base_url = get_env(f"{prefix}_BASE_URL", global_base_url)
+    model = get_env(f"{prefix}_MODEL", global_model)
+    max_tokens_raw = get_env(f"{prefix}_MAX_TOKENS", "")
+    max_tokens = int(max_tokens_raw) if max_tokens_raw.isdigit() else global_max_tokens
+    zdr = _env_flag(f"{prefix}_ZDR", default=global_zdr)
+
+    config = _build_config(
+        provider, base_url, model,
+        label=label,
+        max_tokens=max_tokens,
+        openrouter_zdr=zdr,
+    )
+    log_backend_config(label, provider, base_url, model, config.api_key)
+    backend = _create_backend_from_config(config)
+
+    fallback_raw = get_env(f"{prefix}_FALLBACK_MODELS", "")
+    if fallback_raw.strip() and getattr(backend, "is_openrouter", False):
+        fallback_models = [m.strip() for m in fallback_raw.split(",") if m.strip()]
+        if fallback_models:
+            backend.set_fallback_models(fallback_models)
+            print(f"  [{label}] Fallback models: {fallback_models}")
+
+    return backend
+
+
+def create_pass_backends_from_config(
+    path: str,
+) -> tuple[LLMBackend, LLMBackend, LLMBackend]:
+    """
+    Build pass backends from a backends.yaml file, with env var override support.
+
+    Precedence (standard Unix chain):
+        shell env vars  >  .env file  >  backends.yaml
+
+    If PASS{N}_MODEL or PASS{N}_BASE_URL is set in the environment for a given
+    pass, that pass is rebuilt entirely from PASS{N}_* env vars, overriding the
+    backends.yaml pool for that pass.  This lets users quickly swap a model
+    without editing the file.
+
+    backends.yaml format:
+        backends:
+          local-fast:
+            base_url: http://localhost:11434/v1
+            model: gemma3:4b
+            workers: 4
+          remote:
+            base_url: https://openrouter.ai/api/v1
+            model: google/gemma-3-27b-it:free
+            api_key_env: OPENROUTER_API_KEY
+        passes:
+          pass1: [local-fast]
+          pass2: [local-fast, remote]
+          pass3: [local-fast]
+
+    Returns a 3-tuple (pass1, pass2, pass3).
+    """
+    import yaml
+    from backend.pool import BackendPool
+
+    with open(path, "r") as f:
+        file_config = yaml.safe_load(f)
+
+    backend_specs: dict = file_config.get("backends", {})
+    passes: dict = file_config.get("passes", {})
+
+    # Build all named backends from the file
+    built: dict[str, LLMBackend] = {}
+    for name, spec in backend_specs.items():
+        built[name] = _build_backend_from_spec(spec, name)
+
+    # Globals for env var overrides (same fallback chain as create_pass_backends)
+    global_provider = get_env("LLM_PROVIDER", _DEFAULT_PROVIDER)
+    global_base_url = get_env("LLM_BASE_URL", _DEFAULT_BASE_URL)
+    global_model = get_env("LLM_MODEL", _DEFAULT_MODEL)
+    global_max_tokens_raw = get_env("LLM_MAX_TOKENS", "")
+    global_max_tokens = int(global_max_tokens_raw) if global_max_tokens_raw.isdigit() else None
+    global_zdr = _env_flag("OPENROUTER_ZDR", default=False)
+
+    def _resolve_pass(pass_key: str, pass_num: int, label: str) -> LLMBackend:
+        # Env var override: if PASS{N}_MODEL or PASS{N}_BASE_URL is explicitly set,
+        # rebuild this pass from env vars rather than the YAML pool.
+        env_model = get_env(f"PASS{pass_num}_MODEL", "")
+        env_base_url = get_env(f"PASS{pass_num}_BASE_URL", "")
+        if env_model or env_base_url:
+            override_model = env_model or global_model
+            print(f"  [{label}] env var override: using PASS{pass_num}_MODEL={override_model!r} "
+                  f"(overrides backends.yaml)")
+            return _build_pass_env_override(
+                pass_num, label,
+                global_provider, global_base_url, global_model,
+                global_max_tokens, global_zdr,
+            )
+
+        names = passes.get(pass_key, [])
+        if not names:
+            raise LLMBackendError(
+                f"backends.yaml: no backends assigned to '{pass_key}'. "
+                f"Add a '{pass_key}' entry under 'passes'."
+            )
+        missing = [n for n in names if n not in built]
+        if missing:
+            raise LLMBackendError(
+                f"backends.yaml: '{pass_key}' references unknown backends: {missing}"
+            )
+        members = [built[n] for n in names]
+        if len(members) == 1:
+            return members[0]
+        pool = BackendPool(members, label=label)
+        member_summary = ", ".join(f"{n} ({built[n].model})" for n in names)
+        print(f"  [{label}] Pool: {member_summary}")
+        return pool
+
+    print("\n=== LLM BACKEND CONFIGURATION (backends.yaml) ===")
+    pass1 = _resolve_pass("pass1", 1, "pass1-extract")
+    pass2 = _resolve_pass("pass2", 2, "pass2-assign")
+    pass3 = _resolve_pass("pass3", 3, "pass3-synthesize")
+
+    return pass1, pass2, pass3
+
+
+def backends_config_path() -> Optional[str]:
+    """Return the path to backends.yaml if it exists in the working directory, else None."""
+    path = os.path.join(os.getcwd(), "backends.yaml")
+    return path if os.path.exists(path) else None
