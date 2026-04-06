@@ -46,7 +46,7 @@ class _TrackingBackend:
     def model(self) -> str:
         return f"mock-{self.name}"
 
-    def generate(self, prompt: str, max_tokens=None, json_schema=None, context="") -> str:
+    def generate(self, prompt: str, max_tokens=None, json_schema=None, context="", system_prompt=None) -> str:
         self.calls.append(prompt)
         return self.response
 
@@ -55,7 +55,7 @@ class _TrackingBackend:
 
 
 class _FailingBackend(_TrackingBackend):
-    def generate(self, prompt: str, max_tokens=None, json_schema=None, context="") -> str:
+    def generate(self, prompt: str, max_tokens=None, json_schema=None, context="", system_prompt=None) -> str:
         raise LLMBackendError(f"{self.name} failed")
 
 
@@ -133,7 +133,7 @@ class TestBackendPoolPassthrough:
         received = []
 
         class _SchemaCapture(_TrackingBackend):
-            def generate(self, prompt, max_tokens=None, json_schema=None, context=""):
+            def generate(self, prompt, max_tokens=None, json_schema=None, context="", system_prompt=None):
                 received.append(json_schema)
                 return "ok"
 
@@ -146,7 +146,7 @@ class TestBackendPoolPassthrough:
         received = []
 
         class _TokenCapture(_TrackingBackend):
-            def generate(self, prompt, max_tokens=None, json_schema=None, context=""):
+            def generate(self, prompt, max_tokens=None, json_schema=None, context="", system_prompt=None):
                 received.append(max_tokens)
                 return "ok"
 

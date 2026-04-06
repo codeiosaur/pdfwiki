@@ -68,9 +68,9 @@ class TestBuildSynthesisPrompt:
         assert "none" in prompt.lower()
 
     def test_instructs_no_related_concepts_section(self):
-        prompt = _build_synthesis_prompt("Concept", ["A fact."], [])
-        assert "Related Concepts" in prompt
-        assert "appended automatically" in prompt
+        from generate.synthesize import _SYNTHESIS_SYSTEM_PROMPT
+        assert "Related Concepts" in _SYNTHESIS_SYSTEM_PROMPT
+        assert "appended automatically" in _SYNTHESIS_SYSTEM_PROMPT
 
 
 class TestSectionHelpers:

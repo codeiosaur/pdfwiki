@@ -63,10 +63,10 @@ class BackendConfig:
     wrap_array_schema: bool = False
 
     def __post_init__(self) -> None:
-        if self.provider not in ("openai_compat", "anthropic"):
+        if self.provider not in ("openai_compat", "anthropic", "gemini"):
             raise ValueError(
                 f"Unknown provider '{self.provider}'. "
-                f"Supported: 'openai_compat', 'anthropic'."
+                f"Supported: 'openai_compat', 'anthropic', 'gemini'."
             )
 
 

@@ -300,7 +300,8 @@ Text:
                 break
             reason = _classify_json_failure(raw_content)
             retry_msg = f", retrying ({attempt + 2}/{_MAX_JSON_RETRIES})..." if attempt + 1 < _MAX_JSON_RETRIES else ""
-            print(f"  [pass1] Batch {batch_num}: JSON parse failed — {reason}{retry_msg}")
+            _lbl = backend.last_used_label() if hasattr(backend, "last_used_label") else backend.label
+            print(f"  [{_lbl}] JSON parse failed — {reason}{retry_msg}")
 
         if not isinstance(parsed, list):
             continue
@@ -457,7 +458,8 @@ Output ONLY a JSON array with one entry per statement:
                 break
             reason = _classify_json_failure(raw_content)
             retry_msg = f", retrying ({attempt + 2}/{_MAX_JSON_RETRIES})..." if attempt + 1 < _MAX_JSON_RETRIES else ""
-            print(f"  [pass2] Batch {batch_num}: JSON parse failed — {reason}{retry_msg}")
+            _lbl = backend.last_used_label() if hasattr(backend, "last_used_label") else backend.label
+            print(f"  [{_lbl}] JSON parse failed — {reason}{retry_msg}")
 
         if not isinstance(parsed, list):
             continue
