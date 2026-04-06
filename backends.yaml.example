@@ -1,0 +1,191 @@
+# =============================================================================
+# backends.yaml — PDFWiki backend topology configuration
+#
+# Copy this file to backends.yaml and edit to match your setup.
+# API keys are NEVER written here — reference them by env var name (api_key_env).
+#
+# Precedence (standard Unix chain):
+#   shell env vars  >  .env file  >  backends.yaml
+#
+# To override a single pass for one run without editing this file, set:
+#   PASS1_MODEL=other-model  or  PASS2_BASE_URL=https://...
+# That pass will be rebuilt from env vars; other passes use this file as-is.
+# =============================================================================
+
+
+# ── Optional backend fields (all have defaults if omitted) ───────────────────
+#   provider        — openai_compat (default) or anthropic
+#   max_tokens      — output token limit (default: 4096; use 8192 for larger context windows)
+#   temperature     — sampling temperature (default: 0.0)
+#   workers         — concurrent requests from this backend (default: 1)
+#   num_ctx         — Ollama only: context window size (default: Ollama's own default, usually 2048)
+#                     Set this to match or exceed max_tokens + expected prompt length.
+#                     Pass 3 synthesis with thinking models needs at least 4096; 8192 recommended.
+#   structured_output — set true for providers that support OpenAI json_schema response_format.
+#                     Ollama and OpenRouter are auto-detected; no flag needed for them.
+#                     Groq: only supported on select models (e.g. llama-3.3-70b-versatile);
+#                       llama-3.1-8b-instant does NOT support it — leave unset.
+#                     Cerebras: rejects array roots — use structured_output + wrap_array_schema.
+#   json_mode       — set true for providers that support json_object but not json_schema.
+#                     Guarantees valid JSON output; weaker than structured_output.
+#   wrap_array_schema — use with structured_output: true for providers that support object
+#                     schemas but reject array roots (e.g. Cerebras). The array is wrapped
+#                     in {"items": [...]} before sending; the parser unwraps automatically.
+#   fallback_models — OpenRouter only: models to try if primary is rate-limited
+#   zdr             — OpenRouter only: true to request Zero Data Retention per-request
+#
+# Provider notes:
+#   Mistral AI:     base_url: https://api.mistral.ai/v1
+#                   Free-tier models: open-mistral-nemo (12B), open-mistral-7b
+#                   Rate limits: ~1 req/s, 500k tokens/month on free tier
+#
+#   Cloudflare Workers AI:
+#                   base_url: https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
+#                   Use ${VAR_NAME} in base_url to interpolate env vars (e.g. account ID).
+#                   Free-tier models: @cf/meta/llama-3.1-8b-instruct, @cf/google/gemma-3-12b-it
+#                   10,000 neurons/day free; no json_schema support — prompt-only JSON guidance.
+#
+#   Groq:           base_url: https://api.groq.com/openai/v1
+#                   Free tier: 14,400 req/day, 500k tokens/day (account-wide).
+#                   llama-3.1-8b-instant does NOT support json_schema — leave structured_output unset.
+#                   Keep workers: 1 on full-book runs to avoid exhausting the daily quota.
+#
+#   Cerebras:       base_url: https://api.cerebras.ai/v1
+#                   structured_output + wrap_array_schema: for Pass 3 (text output, no schema).
+#                   Array-root json_schema not supported — do not use for Pass 1 or Pass 2.
+
+
+# =============================================================================
+# PRESET A: All local (Ollama)
+# No rate limits. Requires ~17 GB RAM for all three models simultaneously.
+#
+# Recommended .env settings:
+#   PIPELINE_STREAMING=1              # P1+P2 use different models — overlap is worthwhile
+#   PIPELINE_SYNTHESIS=1
+#   PIPELINE_SYNTHESIS_WORKERS=4      # No rate limits locally
+#   OLLAMA_NUM_PARALLEL=4             # Set in shell, not .env — match to largest workers value
+#   OLLAMA_FLASH_ATTENTION=1          # Set in shell — speeds up Metal inference on Apple Silicon
+# =============================================================================
+
+backends:
+  local-extract:
+    base_url: http://localhost:11434/v1
+    model: gemma3:4b
+    max_tokens: 4096
+    num_ctx: 4096
+    workers: 4
+
+  local-classify:
+    base_url: http://localhost:11434/v1
+    model: qwen3:8b
+    max_tokens: 4096
+    num_ctx: 4096
+    workers: 2
+
+  local-synth:
+    base_url: http://localhost:11434/v1
+    model: qwen3:14b
+    max_tokens: 8192
+    num_ctx: 8192           # thinking tokens + prompt + output; 8192 recommended for synthesis
+    workers: 4
+
+passes:
+  pass1: [local-extract]
+  pass2: [local-classify]
+  pass3: [local-synth]
+
+
+# =============================================================================
+# PRESET B: Hybrid — Pass 1 local, Pass 2 splits local + remote, Pass 3 local
+# Pass 2 sends batches to both backends concurrently; the local backend absorbs
+# work when the remote hits rate limits.
+#
+# Requires: OPENROUTER_API_KEY set in .env or shell
+#
+# Recommended .env settings:
+#   OPENROUTER_API_KEY=your-key-here
+#   PIPELINE_STREAMING=1              # Local P1 + remote P2 — overlap saves significant time
+#   PIPELINE_SYNTHESIS=1
+#   PIPELINE_SYNTHESIS_WORKERS=4      # Pass 3 is local
+#   OLLAMA_NUM_PARALLEL=6             # Set in shell. (Adjust as needed.)
+# =============================================================================
+
+# backends:
+#   local-extract:
+#     base_url: http://localhost:11434/v1
+#     model: gemma3:4b
+#     max_tokens: 4096
+#     num_ctx: 8192
+#     workers: 3
+#
+#   local-classify:
+#     base_url: http://localhost:11434/v1
+#     model: llama3.1:8b
+#     max_tokens: 4096
+#     num_ctx: 8192
+#     workers: 3
+#
+#   remote-classify:
+#     base_url: https://openrouter.ai/api/v1
+#     model: qwen/qwen3.6-plus:free
+#     api_key_env: OPENROUTER_API_KEY
+#     fallback_models: [meta-llama/llama-3.3-70b-instruct:free, openrouter/free]
+#     zdr: false
+#     workers: 2
+#
+#   local-synth:
+#     base_url: http://localhost:11434/v1
+#     model: qwen3:14b
+#     max_tokens: 8192
+#     num_ctx: 8192
+#     workers: 4
+#
+# passes:
+#   pass1: [local-extract]
+#   pass2: [local-classify, remote-classify]
+#   pass3: [local-synth]
+
+
+# =============================================================================
+# PRESET C: All remote (OpenRouter)
+# Fastest wall-clock time but subject to per-account rate limits.
+# Use paid models to avoid rate limiting on large books.
+#
+# Requires: OPENROUTER_API_KEY set in .env or shell
+#
+# Recommended .env settings:
+#   OPENROUTER_API_KEY=your-key-here
+#   PIPELINE_STREAMING=0              # All passes remote — no local/remote split to exploit
+#   PIPELINE_SYNTHESIS=1
+#   PIPELINE_SYNTHESIS_WORKERS=2      # Remote — shares rate-limit quota with Pass 2
+# =============================================================================
+
+# backends:
+#   remote-extract:
+#     base_url: https://openrouter.ai/api/v1
+#     model: meta-llama/llama-3.3-70b-instruct
+#     api_key_env: OPENROUTER_API_KEY
+#     fallback_models: [google/gemma-3-27b-it, qwen/qwen3.6-plus]
+#     zdr: true
+#     workers: 4
+#
+#   remote-classify:
+#     base_url: https://openrouter.ai/api/v1
+#     model: google/gemma-3-27b-it
+#     api_key_env: OPENROUTER_API_KEY
+#     fallback_models: [qwen/qwen3.6-plus, meta-llama/llama-3.3-70b-instruct]
+#     zdr: true
+#     workers: 3
+#
+#   remote-synth:
+#     base_url: https://openrouter.ai/api/v1
+#     model: anthropic/claude-sonnet-4-5
+#     api_key_env: OPENROUTER_API_KEY
+#     fallback_models: [google/gemini-2.5-pro]
+#     zdr: true
+#     workers: 2
+#
+# passes:
+#   pass1: [remote-extract]
+#   pass2: [remote-classify]
+#   pass3: [remote-synth]
