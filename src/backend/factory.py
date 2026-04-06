@@ -154,6 +154,9 @@ def _create_backend_from_config(config: BackendConfig) -> LLMBackend:
     elif config.provider == "anthropic":
         from backend.anthropic import AnthropicBackend
         return AnthropicBackend(config)
+    elif config.provider == "gemini":
+        from backend.gemini import GeminiBackend
+        return GeminiBackend(config)
     else:
         raise LLMBackendError(f"Unknown provider: {config.provider}")
 
@@ -306,16 +309,24 @@ def _build_backend_from_spec(spec: dict, name: str) -> LLMBackend:
     Optional fields: provider, api_key_env, max_tokens, temperature, fallback_models, zdr,
                      num_ctx (Ollama only: overrides default context window)
     """
-    base_url = _interpolate_env(spec.get("base_url", _DEFAULT_BASE_URL))
     model = spec.get("model", _DEFAULT_MODEL)
 
     # Infer provider from spec if not explicit
-    if spec.get("provider") == "anthropic" or "anthropic" in base_url:
+    explicit_provider = spec.get("provider", "")
+    if explicit_provider == "anthropic" or "anthropic" in spec.get("base_url", ""):
         provider = "anthropic"
-    elif spec.get("provider"):
-        provider = spec["provider"]
+    elif explicit_provider == "gemini":
+        provider = "gemini"
+    elif explicit_provider:
+        provider = explicit_provider
     else:
         provider = "openai_compat"
+
+    # Gemini native backend has no base_url — use a descriptive placeholder for logging
+    if provider == "gemini":
+        base_url = "googleapis.com (native SDK)"
+    else:
+        base_url = _interpolate_env(spec.get("base_url", _DEFAULT_BASE_URL))
 
     # API key: read from the named env var, or fall back to standard key resolution
     api_key_env = spec.get("api_key_env")
