@@ -5,6 +5,7 @@ The MockBackend lets you test pipeline logic without hitting a real LLM.
 Set responses on the fixture to control what the "model" returns.
 """
 
+import os
 import sys
 from pathlib import Path
 from dataclasses import dataclass
@@ -14,6 +15,40 @@ import pytest
 
 # Ensure src/ is importable from all test files
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+# ---------------------------------------------------------------------------
+# LLM env-var prefixes that should never leak from the real shell or .env
+# file into tests. Any os.environ key that starts with one of these is
+# cleared at the start of every test.  Individual tests that need a specific
+# value use monkeypatch.setenv() explicitly.
+# ---------------------------------------------------------------------------
+_LLM_ENV_PREFIXES = (
+    "PASS1_", "PASS2_", "PASS3_",
+    "LLM_",
+    "OPENROUTER_", "ANTHROPIC_", "OPENAI_",
+    "PIPELINE_", "TWO_PASS", "ENHANCED_",
+    "OLLAMA_",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_llm_env(monkeypatch):
+    """
+    Prevent real shell variables and .env file contents from leaking into
+    any test.
+
+    Two-step isolation:
+      1. Patch _load_dotenv to a no-op so the .env file is never read.
+         (Without this, monkeypatch.delenv triggers a re-read on the next
+         get_env() call because _load_dotenv only skips keys already present
+         in os.environ.)
+      2. Remove every LLM-config var that is currently set in the shell so
+         tests start from a known-empty state.
+    """
+    monkeypatch.setattr("backend.config._load_dotenv", lambda: None)
+    for key in list(os.environ):
+        if any(key.startswith(p) or key == p.rstrip("_") for p in _LLM_ENV_PREFIXES):
+            monkeypatch.delenv(key, raising=False)
 
 from backend.base import BackendConfig, LLMBackend, LLMBackendError
 from extract.fact_extractor import Fact
@@ -46,7 +81,7 @@ class MockBackend(LLMBackend):
         self.should_fail = should_fail
         self.call_log: list[dict] = []
 
-    def generate(self, prompt: str, max_tokens: Optional[int] = None, json_schema: Optional[dict] = None, context: str = "") -> str:
+    def generate(self, prompt: str, max_tokens: Optional[int] = None, json_schema: Optional[dict] = None, context: str = "", system_prompt: Optional[str] = None) -> str:
         self.call_log.append({"prompt": prompt, "max_tokens": max_tokens, "json_schema": json_schema})
 
         if self.should_fail:

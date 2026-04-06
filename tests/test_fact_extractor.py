@@ -28,8 +28,9 @@ class _Backend:
     def __init__(self, responses: list[str]):
         self._responses = list(responses)
         self.call_log: list[str] = []
+        self.label = "mock"
 
-    def generate(self, prompt: str, max_tokens=None, json_schema=None, context: str = "") -> str:
+    def generate(self, prompt: str, max_tokens=None, json_schema=None, context: str = "", system_prompt=None) -> str:
         self.call_log.append(prompt)
         if self._responses:
             return self._responses.pop(0)

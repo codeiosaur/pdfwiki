@@ -27,7 +27,10 @@ data/
 tmp/
 *.pdf
 *.json
+backends.yaml
 .DS_STORE
 .aider*
 # Manual seed concepts used for testing and UX - safe to include
 !seeds/*.json
+# Keep example files
+!backends.yaml.example
