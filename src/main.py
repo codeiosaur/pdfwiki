@@ -39,12 +39,15 @@ def run_application(args) -> None:
     pass1_batch_size = int(os.getenv("PIPELINE_PASS1_BATCH_SIZE", str(batch_size)))
     pass2_batch_size = int(os.getenv("PIPELINE_PASS2_BATCH_SIZE", str(batch_size)))
     max_workers = int(os.getenv("PIPELINE_MAX_WORKERS", "5"))
-    pass1_max_workers = int(os.getenv("PASS1_MAX_WORKERS", str(max_workers)))
-    pass2_max_workers = int(os.getenv("PASS2_MAX_WORKERS", str(max_workers)))
+    _p1w_env = os.getenv("PASS1_MAX_WORKERS", "").strip()
+    _p2w_env = os.getenv("PASS2_MAX_WORKERS", "").strip()
+    _synth_env = os.getenv("PIPELINE_SYNTHESIS_WORKERS", "").strip()
+    pass1_max_workers = int(_p1w_env) if _p1w_env else max_workers
+    pass2_max_workers = int(_p2w_env) if _p2w_env else max_workers
     render_workers = int(os.getenv("PIPELINE_RENDER_WORKERS", "1"))
     enrich_workers = int(os.getenv("PIPELINE_ENRICH_WORKERS", "1"))
     use_synthesis = os.getenv("PIPELINE_SYNTHESIS", "0").strip().lower() in {"1", "true", "yes"}
-    synthesis_workers = int(os.getenv("PIPELINE_SYNTHESIS_WORKERS", "1"))
+    synthesis_workers = int(_synth_env) if _synth_env else 1
     max_chunks_env = os.getenv("PIPELINE_MAX_CHUNKS", "").strip()
     max_chunks = int(max_chunks_env) if max_chunks_env.isdigit() else None
 
@@ -68,6 +71,19 @@ def run_application(args) -> None:
         pass2_backend = backend
         pass3_backend = backend
         canonicalize_backend = backend
+
+    # Auto-derive max_workers from pool capacity when not explicitly overridden.
+    # BackendPool.total_workers = sum of member workers, so the outer executor
+    # has exactly enough threads to keep every backend slot busy at once.
+    if not _p1w_env and hasattr(pass1_backend, "total_workers"):
+        pass1_max_workers = pass1_backend.total_workers
+        print(f"  [auto] pass1_max_workers = {pass1_max_workers} (pool capacity)")
+    if not _p2w_env and hasattr(pass2_backend, "total_workers"):
+        pass2_max_workers = pass2_backend.total_workers
+        print(f"  [auto] pass2_max_workers = {pass2_max_workers} (pool capacity)")
+    if not _synth_env and hasattr(pass3_backend, "total_workers"):
+        synthesis_workers = pass3_backend.total_workers
+        print(f"  [auto] synthesis_workers = {synthesis_workers} (pool capacity)")
 
     validate_pipeline_inputs(demo_pdf_path, output_path, seeds_file=args.seeds)
 
@@ -116,22 +132,28 @@ def run_application(args) -> None:
     rule_normalized_grouped = normalize_group_keys(grouped)
 
     concept_names = list(rule_normalized_grouped.keys())
+    _t = time.perf_counter()
     canonical_map = canonicalize_concepts(concept_names, backend=canonicalize_backend)
+    print(f"Canonicalization complete ({time.perf_counter() - _t:.0f}s)")
 
     final_grouped = apply_canonical_map(rule_normalized_grouped, canonical_map)
     final_grouped = merge_similar_concepts(final_grouped)
     final_grouped = cluster_related_concepts(final_grouped)
 
     if use_two_pass:
+        _t = time.perf_counter()
         final_grouped = consolidate_concepts_llm(final_grouped, backend=canonicalize_backend)
+        print(f"Consolidation complete ({time.perf_counter() - _t:.0f}s)")
 
     enrich_threshold = int(os.getenv("PIPELINE_ENRICH_THRESHOLD", "6"))
     if enrich_threshold > 0:
         print(f"\nEnrichment pass: filling concepts with < {enrich_threshold} facts...")
+        _t = time.perf_counter()
         final_grouped = enrich_thin_concepts(
             final_grouped, backend=canonicalize_backend, min_facts=enrich_threshold,
             workers=enrich_workers,
         )
+        print(f"Enrichment complete ({time.perf_counter() - _t:.0f}s)")
 
     min_publishable = int(os.getenv("PIPELINE_MIN_PUBLISHABLE_FACTS", "2"))
     if min_publishable > 1:
@@ -175,13 +197,14 @@ def run_application(args) -> None:
             f"\nPass 3 [synthesis]: Rewriting {len(pages)} pages "
             f"[{pass3_backend.label}:{pass3_backend.model}]..."
         )
+        _t = time.perf_counter()
         pages = synthesize_pages(
             final_grouped,
             backend=pass3_backend,
             wiki_pages=pages,
             workers=synthesis_workers,
         )
-        print(f"Pass 3 [synthesis]: {len(pages)} pages written")
+        print(f"Pass 3 [synthesis]: {len(pages)} pages written ({time.perf_counter() - _t:.0f}s)")
 
     preview = render_pages_preview(pages, max_pages=2)
     if preview:

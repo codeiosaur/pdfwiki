@@ -45,6 +45,7 @@ class AnthropicBackend(LLMBackend):
         max_tokens: Optional[int] = None,
         json_schema: Optional[dict] = None,
         context: str = "",
+        system_prompt: Optional[str] = None,
     ) -> str:
         tokens = max_tokens if max_tokens is not None else self._config.max_tokens
 
@@ -55,12 +56,23 @@ class AnthropicBackend(LLMBackend):
             schema_hint = _json.dumps(json_schema.get("schema", json_schema), indent=2)
             actual_prompt = f"{prompt}\n\nRespond with ONLY valid JSON matching this schema:\n{schema_hint}"
 
+        create_kwargs: dict = {
+            "model": self._config.model,
+            "max_tokens": tokens,
+            "messages": [{"role": "user", "content": actual_prompt}],
+        }
+        # Anthropic has a native top-level system parameter with cache_control support.
+        if system_prompt is not None:
+            create_kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+
         try:
-            response = self._client.messages.create(
-                model=self._config.model,
-                max_tokens=tokens,
-                messages=[{"role": "user", "content": actual_prompt}],
-            )
+            response = self._client.messages.create(**create_kwargs)
         except Exception as exc:
             raise LLMBackendError(
                 f"[{self.label}] Anthropic API request failed: {exc}"

@@ -21,8 +21,38 @@
 #   num_ctx         — Ollama only: context window size (default: Ollama's own default, usually 2048)
 #                     Set this to match or exceed max_tokens + expected prompt length.
 #                     Pass 3 synthesis with thinking models needs at least 4096; 8192 recommended.
+#   structured_output — set true for providers that support OpenAI json_schema response_format.
+#                     Ollama and OpenRouter are auto-detected; no flag needed for them.
+#                     Groq: only supported on select models (e.g. llama-3.3-70b-versatile);
+#                       llama-3.1-8b-instant does NOT support it — leave unset.
+#                     Cerebras: rejects array roots — use structured_output + wrap_array_schema.
+#   json_mode       — set true for providers that support json_object but not json_schema.
+#                     Guarantees valid JSON output; weaker than structured_output.
+#   wrap_array_schema — use with structured_output: true for providers that support object
+#                     schemas but reject array roots (e.g. Cerebras). The array is wrapped
+#                     in {"items": [...]} before sending; the parser unwraps automatically.
 #   fallback_models — OpenRouter only: models to try if primary is rate-limited
 #   zdr             — OpenRouter only: true to request Zero Data Retention per-request
+#
+# Provider notes:
+#   Mistral AI:     base_url: https://api.mistral.ai/v1
+#                   Free-tier models: open-mistral-nemo (12B), open-mistral-7b
+#                   Rate limits: ~1 req/s, 500k tokens/month on free tier
+#
+#   Cloudflare Workers AI:
+#                   base_url: https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1
+#                   Use ${VAR_NAME} in base_url to interpolate env vars (e.g. account ID).
+#                   Free-tier models: @cf/meta/llama-3.1-8b-instruct, @cf/google/gemma-3-12b-it
+#                   10,000 neurons/day free; no json_schema support — prompt-only JSON guidance.
+#
+#   Groq:           base_url: https://api.groq.com/openai/v1
+#                   Free tier: 14,400 req/day, 500k tokens/day (account-wide).
+#                   llama-3.1-8b-instant does NOT support json_schema — leave structured_output unset.
+#                   Keep workers: 1 on full-book runs to avoid exhausting the daily quota.
+#
+#   Cerebras:       base_url: https://api.cerebras.ai/v1
+#                   structured_output + wrap_array_schema: for Pass 3 (text output, no schema).
+#                   Array-root json_schema not supported — do not use for Pass 1 or Pass 2.
 
 
 # =============================================================================
@@ -85,14 +115,14 @@ passes:
 #     base_url: http://localhost:11434/v1
 #     model: gemma3:4b
 #     max_tokens: 4096
-#     num_ctx: 4096
+#     num_ctx: 8192
 #     workers: 3
 #
 #   local-classify:
 #     base_url: http://localhost:11434/v1
 #     model: llama3.1:8b
 #     max_tokens: 4096
-#     num_ctx: 4096
+#     num_ctx: 8192
 #     workers: 3
 #
 #   remote-classify:

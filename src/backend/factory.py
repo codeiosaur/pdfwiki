@@ -18,6 +18,7 @@ round-robin via BackendPool, giving each backend an equal share of batches.
 """
 
 import os
+import re
 from typing import Optional
 
 from backend.base import BackendConfig, LLMBackend, LLMBackendError
@@ -59,6 +60,11 @@ def warn_deprecated_env_vars() -> None:
         "  fine for simple single-backend-per-pass setups.\n"
         "  See backends.yaml.example for the format.\n"
     )
+
+
+def _interpolate_env(s: str) -> str:
+    """Expand ${VAR_NAME} references in a string using os.environ."""
+    return re.sub(r"\$\{([^}]+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), s)
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -110,6 +116,9 @@ def _build_config(
     temperature: float = _DEFAULT_TEMPERATURE,
     openrouter_zdr: bool = False,
     ollama_num_ctx: Optional[int] = None,
+    structured_output: bool = False,
+    json_mode: bool = False,
+    wrap_array_schema: bool = False,
 ) -> BackendConfig:
     """Build a BackendConfig, resolving the API key if not provided."""
     if api_key is None:
@@ -131,6 +140,9 @@ def _build_config(
         label=label,
         openrouter_zdr=openrouter_zdr,
         ollama_num_ctx=ollama_num_ctx,
+        structured_output=structured_output,
+        json_mode=json_mode,
+        wrap_array_schema=wrap_array_schema,
     )
 
 
@@ -294,7 +306,7 @@ def _build_backend_from_spec(spec: dict, name: str) -> LLMBackend:
     Optional fields: provider, api_key_env, max_tokens, temperature, fallback_models, zdr,
                      num_ctx (Ollama only: overrides default context window)
     """
-    base_url = spec.get("base_url", _DEFAULT_BASE_URL)
+    base_url = _interpolate_env(spec.get("base_url", _DEFAULT_BASE_URL))
     model = spec.get("model", _DEFAULT_MODEL)
 
     # Infer provider from spec if not explicit
@@ -313,6 +325,9 @@ def _build_backend_from_spec(spec: dict, name: str) -> LLMBackend:
     temperature = spec.get("temperature", _DEFAULT_TEMPERATURE)
     zdr = bool(spec.get("zdr", False))
     num_ctx = spec.get("num_ctx") or None
+    structured_output = bool(spec.get("structured_output", False))
+    json_mode = bool(spec.get("json_mode", False))
+    wrap_array_schema = bool(spec.get("wrap_array_schema", False))
 
     config = _build_config(
         provider, base_url, model,
@@ -322,6 +337,9 @@ def _build_backend_from_spec(spec: dict, name: str) -> LLMBackend:
         temperature=temperature,
         openrouter_zdr=zdr,
         ollama_num_ctx=int(num_ctx) if num_ctx else None,
+        structured_output=structured_output,
+        json_mode=json_mode,
+        wrap_array_schema=wrap_array_schema,
     )
     log_backend_config(name, provider, base_url, model, config.api_key)
     backend = _create_backend_from_config(config)
@@ -413,8 +431,10 @@ def create_pass_backends_from_config(
 
     # Build all named backends from the file
     built: dict[str, LLMBackend] = {}
+    backend_workers: dict[str, int] = {}
     for name, spec in backend_specs.items():
         built[name] = _build_backend_from_spec(spec, name)
+        backend_workers[name] = max(1, int(spec.get("workers", 1)))
 
     # Globals for env var overrides (same fallback chain as create_pass_backends)
     global_provider = get_env("LLM_PROVIDER", _DEFAULT_PROVIDER)
@@ -453,8 +473,9 @@ def create_pass_backends_from_config(
         members = [built[n] for n in names]
         if len(members) == 1:
             return members[0]
-        pool = BackendPool(members, label=label)
-        member_summary = ", ".join(f"{n} ({built[n].model})" for n in names)
+        weights = [backend_workers[n] for n in names]
+        pool = BackendPool(members, label=label, weights=weights)
+        member_summary = ", ".join(f"{n} ({built[n].model}, w={backend_workers[n]})" for n in names)
         print(f"  [{label}] Pool: {member_summary}")
         return pool
 
