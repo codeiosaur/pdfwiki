@@ -8,6 +8,7 @@ Flash / Flash-Lite models continue to use openai_compat — this backend
 is only needed when the OpenAI-compat path returns 404 or malformed JSON.
 """
 
+import concurrent.futures
 import time
 import random
 from typing import Optional
@@ -88,7 +89,6 @@ class GeminiBackend(LLMBackend):
         if system_prompt is not None:
             config_kwargs["system_instruction"] = system_prompt
 
-        config_kwargs["http_options"] = genai_types.HttpOptions(timeout=_REQUEST_TIMEOUT_SECONDS)
         generate_config = genai_types.GenerateContentConfig(**config_kwargs)
 
         backoff = _INITIAL_BACKOFF_SECONDS
@@ -96,11 +96,19 @@ class GeminiBackend(LLMBackend):
 
         for attempt in range(_MAX_RETRIES):
             try:
-                response = self._client.models.generate_content(
-                    model=self._config.model,
-                    contents=actual_prompt,
-                    config=generate_config,
-                )
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+                    _fut = _ex.submit(
+                        self._client.models.generate_content,
+                        model=self._config.model,
+                        contents=actual_prompt,
+                        config=generate_config,
+                    )
+                    try:
+                        response = _fut.result(timeout=_REQUEST_TIMEOUT_SECONDS)
+                    except concurrent.futures.TimeoutError:
+                        raise LLMBackendError(
+                            f"[{self.label}] Request timed out after {_REQUEST_TIMEOUT_SECONDS}s"
+                        )
                 text = response.text
                 if not text or not text.strip():
                     raise LLMBackendError(
