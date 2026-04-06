@@ -28,35 +28,48 @@ if TYPE_CHECKING:
 # Prompt builder
 # ---------------------------------------------------------------------------
 
+# Maximum facts sent per synthesis request.  Concepts with more facts than this
+# have their list truncated.  Models plateau in quality around 20-25 facts while
+# additional facts increase input token cost without benefit.
+_MAX_SYNTHESIS_FACTS = 25
+
+# Static instructions sent as the system message on every synthesis call.
+# Keeping this constant lets providers cache it after the first request.
+_SYNTHESIS_SYSTEM_PROMPT = """You are writing Obsidian wiki study-note pages for an academic subject.
+
+Write the page body in Markdown:
+- Start with # {title} as the page title (the exact title will be given in the user message).
+- Follow with a short intro paragraph (1–3 sentences) defining the concept. Bold the concept name on first use (**Concept Name**).
+- Use ## section headers that fit the content. Choose from: Formula, How It Works, Interpretation, Comparison, Worked Example, Key Takeaways, Cautions. Only include sections that have content from the source facts.
+- If a formula is present, render it in a fenced code block.
+- If multiple variants or methods exist, create a Markdown comparison table.
+- Under Worked Example, include any concrete numbers from the source facts.
+- Link related concepts using [[wikilinks]] on first mention in the body text.
+- Do NOT output a ## Related Concepts, ## See Also, ## Sources section, or YAML frontmatter — those are appended automatically.
+- Do NOT invent facts, examples, or numbers not provided.
+- Do NOT reference source facts by number (e.g. "(fact 3)") — write prose that integrates the information naturally.
+
+Output ONLY the Markdown page body, starting with # followed by the concept title."""
+
+
 def _build_synthesis_prompt(
     display_title: str,
     fact_contents: List[str],
     related_titles: List[str],
 ) -> str:
+    """Build the user-turn prompt (variable per concept). System prompt is separate."""
     numbered = "\n".join(f"  {i + 1}. {f}" for i, f in enumerate(fact_contents))
     link_hints = (
         ", ".join(f"[[{t}]]" for t in related_titles)
         if related_titles
         else "none"
     )
-    return f"""You are writing an Obsidian wiki study-note page for the concept "{display_title}".
+    return f"""Write a wiki page for the concept "{display_title}".
 
 Source facts — use ONLY these; do not invent additional information:
 {numbered}
 
 Other concepts you may link with [[wikilinks]] (use the exact titles shown): {link_hints}
-
-Write the page body in Markdown:
-- Start with # {display_title} as the page title.
-- Follow with a short intro paragraph (1–3 sentences) defining the concept. Bold the concept name on first use (**{display_title}**).
-- Use ## section headers that fit the content. Choose from: Formula, How It Works, Interpretation, Comparison, Worked Example, Key Takeaways, Cautions. Only include sections that have content from the source facts.
-- If a formula is present, render it in a fenced code block (```).
-- If multiple variants or methods exist, create a Markdown comparison table.
-- Under Worked Example, include any concrete numbers from the source facts.
-- Link related concepts using [[wikilinks]] on first mention in the body text.
-- Do NOT output a ## Related Concepts, ## See Also, ## Sources section, or YAML frontmatter — those are appended automatically.
-- Do NOT invent facts, examples, or numbers not in the source list above.
-- Do NOT reference source facts by number (e.g. "(fact 3)", "(facts 2 and 5)") — write prose that integrates the information naturally.
 
 Output ONLY the Markdown page body, starting with # {display_title}."""
 
@@ -150,11 +163,13 @@ def synthesize_pages(
     }
 
     def _synthesize_one(concept: str) -> tuple[str, str]:
+        import time as _time
+        _t0 = _time.perf_counter()
         display_title = normalize_page_title(concept)
         fallback = wiki_pages.get(display_title, "")
 
         facts = grouped[concept]
-        fact_contents = list(unique_fact_contents(facts))
+        fact_contents = list(unique_fact_contents(facts))[:_MAX_SYNTHESIS_FACTS]
         if not fact_contents:
             return display_title, fallback
 
@@ -166,7 +181,8 @@ def synthesize_pages(
         prompt = _build_synthesis_prompt(display_title, fact_contents, related_titles)
 
         try:
-            raw = backend.generate(prompt)
+            raw = backend.generate(prompt, context=display_title,
+                                   system_prompt=_SYNTHESIS_SYSTEM_PROMPT)
         except Exception as exc:
             logging.warning("Synthesis failed for '%s': %s", concept, exc)
             return display_title, fallback
@@ -191,7 +207,9 @@ def synthesize_pages(
         parts = [p for p in [frontmatter, body, tail] if p]
         page = "\n\n".join(parts)
 
-        print(f"  Pass 3 [synthesis]: wrote '{display_title}'")
+        used_label = backend.last_used_label() if hasattr(backend, "last_used_label") else backend.label
+        elapsed = _time.perf_counter() - _t0
+        print(f"  Pass 3 [synthesis]: wrote '{display_title}' [{used_label}] ({elapsed:.0f}s)")
         return display_title, page
 
     results: dict[str, str] = {}

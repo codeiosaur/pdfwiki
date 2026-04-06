@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 
 import json
+import time
 import uuid
 
 if TYPE_CHECKING:
@@ -133,19 +134,55 @@ def _strip_markdown_fences(text: str) -> str:
 
 
 def _parse_json_array(raw_content: str):
-    """Parse a JSON array from raw model output."""
+    """Parse a JSON array from raw model output.
+
+    Handles three common model output patterns:
+    - Bare array:              [{"a": 1}, ...]
+    - Markdown-fenced:         ```json\n[...]\n```
+    - Object-wrapped array:    {"items": [...]} or {"statements": [...]}
+      (produced by providers using json_object mode, which enforces a dict root)
+    """
     cleaned = _strip_markdown_fences(raw_content)
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
     except Exception:
         start = cleaned.find("[")
         end = cleaned.rfind("]")
         if start == -1 or end == -1 or end <= start:
             return None
         try:
-            return json.loads(cleaned[start : end + 1])
+            parsed = json.loads(cleaned[start : end + 1])
         except Exception:
             return None
+
+    if isinstance(parsed, list):
+        return parsed
+
+    # json_object mode wraps the array in a dict (e.g. {"statements": [...]}).
+    # Take the longest list value — that's the payload, not an empty error list.
+    if isinstance(parsed, dict):
+        lists = [v for v in parsed.values() if isinstance(v, list)]
+        if lists:
+            return max(lists, key=len)
+
+    return None
+
+
+def _classify_json_failure(raw_content: str) -> str:
+    """Return a short label describing why JSON parsing failed."""
+    cleaned = _strip_markdown_fences(raw_content).strip()
+    if not cleaned:
+        return "empty response"
+    if cleaned.startswith("[") and not cleaned.endswith("]"):
+        return "truncated (array started but not closed — increase num_ctx or reduce batch size)"
+    if cleaned.startswith("{"):
+        try:
+            keys = list(json.loads(cleaned).keys())
+            return f"wrong shape (object instead of array) — keys: {keys}"
+        except Exception:
+            pass
+        return "wrong shape (object instead of array)"
+    return "malformed (unexpected format)"
 
 
 def _parse_json_object(raw_content: str):
@@ -245,20 +282,27 @@ Text:
         }
 
         batch_num = i // batch_size + 1
-        try:
-            raw_content = backend.generate(
-                prompt, json_schema=statement_extraction_schema,
-                context=f"batch {batch_num}",
-            )
-        except Exception as exc:
-            print(f"  [pass1] Batch {batch_num}: LLM call failed: {exc}")
-            continue
+        parsed = None
+        _MAX_JSON_RETRIES = 2
+        for attempt in range(_MAX_JSON_RETRIES):
+            t0 = time.monotonic()
+            try:
+                raw_content = backend.generate(
+                    prompt, json_schema=statement_extraction_schema,
+                    context=f"batch {batch_num}",
+                )
+            except Exception as exc:
+                print(f"  [pass1] Batch {batch_num}: LLM call failed: {exc}")
+                break
+            elapsed = time.monotonic() - t0
+            parsed = _parse_json_array(raw_content)
+            if isinstance(parsed, list):
+                break
+            reason = _classify_json_failure(raw_content)
+            retry_msg = f", retrying ({attempt + 2}/{_MAX_JSON_RETRIES})..." if attempt + 1 < _MAX_JSON_RETRIES else ""
+            print(f"  [pass1] Batch {batch_num}: JSON parse failed — {reason}{retry_msg}")
 
-        parsed = _parse_json_array(raw_content)
         if not isinstance(parsed, list):
-            preview = (raw_content[:200] + "...") if len(raw_content) > 200 else raw_content
-            print(f"  [pass1] Batch {batch_num}: Failed to parse JSON from response:")
-            print(f"           {preview}")
             continue
 
         # Build a mapping from chunk id -> source filename so we can attach
@@ -320,17 +364,13 @@ def assign_concepts_to_statements(
     seeds = seed_concepts if seed_concepts is not None else load_builtin_seeds()
     seed_block = "\n".join(f"  - {c}" for c in seeds)
 
-    all_facts: List[Fact] = []
-
-    for i in range(0, len(statements), batch_size):
-        batch = statements[i : i + batch_size]
-
-        numbered_statements = "\n".join(
-            f"  {j+1}. {s['statement']}" for j, s in enumerate(batch)
-        )
-
-        if strict_seeds:
-            prompt = f"""Assign each statement below to exactly ONE concept name from the approved list.
+    # Build the system message once — it contains the static instructions and
+    # seed list, which are identical across all batches in this call.  Sending
+    # it as a system message lets providers that support prompt caching
+    # (OpenAI, Anthropic via OpenRouter, DeepSeek) serve it from cache on
+    # every batch after the first, cutting input token cost significantly.
+    if strict_seeds:
+        p2_system_prompt = f"""Assign each statement to exactly ONE concept name from the approved list.
 
 APPROVED concept names — you MUST use one of these, no exceptions:
 {seed_block}
@@ -340,13 +380,10 @@ Rules:
 - If a statement fits multiple concepts from the list, assign it to the more specific one.
 - Do NOT invent new concept names.
 
-Statements:
-{numbered_statements}
-
 Output ONLY a JSON array with one entry per statement:
 [{{"index": 1, "concept": "Concept Name"}}, {{"index": 2, "concept": "Concept Name"}}]"""
-        else:
-            prompt = f"""Assign each statement below to exactly ONE concept name.
+    else:
+        p2_system_prompt = f"""Assign each statement to exactly ONE concept name.
 
 PREFERRED concept names (use one of these when the statement is about that topic):
 {seed_block}
@@ -359,57 +396,70 @@ Rules:
 - Every statement must get exactly one concept name.
 - If a statement fits multiple concepts from the list, assign it to the more specific one.
 
-Statements:
-{numbered_statements}
-
 Output ONLY a JSON array with one entry per statement:
 [{{"index": 1, "concept": "Concept Name"}}, {{"index": 2, "concept": "Concept Name"}}]"""
 
-        # JSON schema for structured output (enforced by OpenRouter, best-effort elsewhere).
-        # When strict_seeds=True, add an enum constraint so OpenRouter enforces seed adherence
-        # server-side — the model cannot output a concept not in the approved list.
-        concept_property: dict = {
-            "type": "string",
-            "description": "The assigned concept name (1-4 word noun phrase)",
-        }
-        if strict_seeds and seeds:
-            concept_property["enum"] = seeds
+    # JSON schema for structured output (enforced by OpenRouter, best-effort elsewhere).
+    # When strict_seeds=True, add an enum constraint so OpenRouter enforces seed adherence
+    # server-side — the model cannot output a concept not in the approved list.
+    concept_property: dict = {
+        "type": "string",
+        "description": "The assigned concept name (1-4 word noun phrase)",
+    }
+    if strict_seeds and seeds:
+        concept_property["enum"] = seeds
 
-        concept_assignment_schema = {
-            "name": "concept_assignments",
-            "schema": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "index": {
-                            "type": "integer",
-                            "description": "The statement number (1-based)",
-                        },
-                        "concept": concept_property,
+    concept_assignment_schema = {
+        "name": "concept_assignments",
+        "schema": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "The statement number (1-based)",
                     },
-                    "required": ["index", "concept"],
-                    "additionalProperties": False,
+                    "concept": concept_property,
                 },
+                "required": ["index", "concept"],
+                "additionalProperties": False,
             },
-        }
+        },
+    }
+
+    all_facts: List[Fact] = []
+
+    for i in range(0, len(statements), batch_size):
+        batch = statements[i : i + batch_size]
+
+        numbered_statements = "\n".join(
+            f"  {j+1}. {s['statement']}" for j, s in enumerate(batch)
+        )
+        # User message: just the variable statements for this batch.
+        prompt = f"Statements:\n{numbered_statements}"
 
         batch_num = i // batch_size + 1
-        try:
-            raw_content = backend.generate(
-                prompt, json_schema=concept_assignment_schema,
-                context=f"batch {batch_num}",
-            )
-        except Exception as exc:
-            print(f"  [pass2] Batch {batch_num}: LLM call failed: {exc}")
-            continue
+        parsed = None
+        _MAX_JSON_RETRIES = 2
+        for attempt in range(_MAX_JSON_RETRIES):
+            try:
+                raw_content = backend.generate(
+                    prompt, json_schema=concept_assignment_schema,
+                    context=f"batch {batch_num}",
+                    system_prompt=p2_system_prompt,
+                )
+            except Exception as exc:
+                print(f"  [pass2] Batch {batch_num}: LLM call failed: {exc}")
+                break
+            parsed = _parse_json_array(raw_content)
+            if isinstance(parsed, list):
+                break
+            reason = _classify_json_failure(raw_content)
+            retry_msg = f", retrying ({attempt + 2}/{_MAX_JSON_RETRIES})..." if attempt + 1 < _MAX_JSON_RETRIES else ""
+            print(f"  [pass2] Batch {batch_num}: JSON parse failed — {reason}{retry_msg}")
 
-        parsed = _parse_json_array(raw_content)
         if not isinstance(parsed, list):
-            # Show a preview of what we got back so the user can diagnose
-            preview = (raw_content[:200] + "...") if len(raw_content) > 200 else raw_content
-            print(f"  [pass2] Batch {batch_num}: Failed to parse JSON from response:")
-            print(f"           {preview}")
             continue
 
         concept_map: dict[int, str] = {}
