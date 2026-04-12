@@ -1,36 +1,49 @@
 """
 BackendPool — distributes LLM calls across multiple backends for a single pass.
 
-When multiple backends are assigned to a pass, batches are dispatched using a
-weighted rotation across all of them.  Each backend appears in the dispatch
-order proportional to its ``workers`` weight, so a backend with weight 6
-handles 60% of requests when paired with a weight-4 backend.
+For generate() calls: batches are dispatched using weighted rotation. Each
+backend acquires a semaphore slot before processing, enforcing its per-backend
+concurrency limit. If the chosen backend fails, fallback happens transparently.
+
+For dispatch() calls (batch processing): all items go into a shared queue.
+Each backend contributes N workers (from its ``workers`` config). Workers
+pull batches from the queue in a work-stealing pattern until exhausted,
+ensuring load balancing: faster backends process more items.
 
 Usage:
     pool = BackendPool([local_backend, remote_backend], label="pass2-assign",
-                       weights=[4, 2])
-    result = pool.generate(prompt, json_schema=schema)
+                       workers=[4, 2])
+    result = pool.generate(prompt, json_schema=schema)  # weighted rotation
+    results = pool.dispatch(items, process_fn, batch_size)  # work-stealing
 """
 
 import itertools
 import threading
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, List, Optional, TypeVar
 
 from backend.base import LLMBackend, BackendConfig
+
+_T = TypeVar("_T")
 
 
 class BackendPool(LLMBackend):
     """
-    Wraps multiple LLMBackend instances and exposes the same generate() interface.
+    Wraps multiple LLMBackend instances and exposes both single-request and
+    batch-processing interfaces.
 
-    Requests are dispatched using a weighted rotation: each backend appears in
-    the dispatch order once per unit of its weight.  Unweighted pools (all
-    weights=1) behave identically to the previous round-robin.  The pool is a
-    drop-in replacement for any single LLMBackend.
+    For generate() calls: weighted rotation dispatch with per-backend semaphore
+    slots. Each backend appears in the dispatch order once per unit of its
+    ``workers`` weight. Fallback happens transparently if the chosen backend fails.
+
+    For dispatch() calls (batch processing): work-stealing queue. All items go
+    into a shared queue. Each backend contributes N workers (from its ``workers``
+    config). Workers pull batches from the queue until exhausted, ensuring
+    dynamic load balancing based on actual processing speed, not pre-allocation.
 
     Thread-local tracking: last_used_label() returns the label of the backend
-    that handled the most recent generate() call on the calling thread, allowing
-    callers to log which backend produced a given result.
+    that handled the most recent generate() or dispatch() call on the calling
+    thread, allowing callers to log which backend produced a given result.
     """
 
     def __init__(
@@ -52,6 +65,7 @@ class BackendPool(LLMBackend):
             weights = [1] * len(backends)
         if len(weights) != len(backends):
             raise ValueError("weights length must match backends length")
+        self._weights = weights
         self._dispatch_order: list[LLMBackend] = [
             b for b, w in zip(backends, weights) for _ in range(max(1, w))
         ]
@@ -128,7 +142,7 @@ class BackendPool(LLMBackend):
             except Exception as exc:
                 last_exc = exc
                 if i < len(backends_to_try) - 1:
-                    print(f"  [{self._label}] {backend.label} failed, "
+                    print(f"  [{self._label}] {backend.label} failed ({exc}), "
                           f"trying {backends_to_try[i + 1][1].label}...")
             finally:
                 self._semaphores[b_idx].release()
@@ -146,3 +160,86 @@ class BackendPool(LLMBackend):
     def member_labels(self) -> list[str]:
         """Return labels of all member backends (for logging)."""
         return [b.label for b in self._backends]
+
+    def dispatch(
+        self,
+        items: List[_T],
+        process_fn: Callable[[List[_T], LLMBackend, int], List],
+        default_batch_size: int,
+    ) -> List:
+        """
+        Distribute items across backend workers using work-stealing.
+
+        All items go into a shared queue. Each backend contributes N workers
+        (from its ``workers`` config). Workers pull batches from the queue until
+        exhausted, with no per-backend concurrency limits—allowing faster
+        backends to naturally process more items.
+
+        This ensures true load balancing: faster backends process more items
+        due to pulling more frequently, while ThreadPoolExecutor enforces
+        overall concurrency (max_workers = sum of all backend workers).
+
+        Results are collected and returned in any order (insertion order is lost).
+
+        Args:
+            items:             Full list of items to process (e.g. statements).
+            process_fn:        Callable(items_slice, backend, batch_size) -> list.
+                               Called by each worker thread with its batch.
+            default_batch_size: Fallback batch size for backends without
+                               ``preferred_batch_size`` set.
+
+        Returns:
+            Flat list of all results from all workers, in any order.
+        """
+        if not items:
+            return []
+
+        from collections import deque
+
+        # Shared state: queue of items, results list, locks
+        item_queue: deque = deque(items)
+        queue_lock = threading.Lock()
+        results: List = []
+        results_lock = threading.Lock()
+
+        def _worker(backend: LLMBackend, backend_idx: int) -> None:
+            """
+            Worker loop: pull batch from queue, process, repeat until queue empty.
+            No per-backend semaphore; ThreadPoolExecutor enforces total concurrency.
+            """
+            bs = backend.preferred_batch_size or default_batch_size
+            while True:
+                # Pull a batch from the queue (brief lock, then released)
+                with queue_lock:
+                    if not item_queue:
+                        return  # queue empty, worker exits
+                    # Pull up to batch_size items from the queue
+                    batch = [item_queue.popleft() for _ in range(min(bs, len(item_queue)))]
+                    if not batch:
+                        return
+
+                # Process the batch without holding locks (true work-stealing)
+                self._thread_local.last_backend_label = backend.label
+                result = process_fn(batch, backend, bs)
+
+                # Append results (thread-safe)
+                with results_lock:
+                    results.extend(result)
+
+        # Spawn workers: each backend gets N worker threads (no per-backend concurrency limit).
+        # ThreadPoolExecutor enforces max_workers = sum of all backend workers.
+        with ThreadPoolExecutor(max_workers=self._total_workers) as executor:
+            futures = []
+            for backend_idx, (backend, num_workers) in enumerate(
+                zip(self._backends, self._weights)
+            ):
+                # Each backend contributes num_workers worker threads
+                for _ in range(max(1, num_workers)):
+                    f = executor.submit(_worker, backend, backend_idx)
+                    futures.append(f)
+
+            # Wait for all workers to complete; any exception is re-raised
+            for future in as_completed(futures):
+                future.result()
+
+        return results

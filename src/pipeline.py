@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, List, Optional
 import logging
 import os
-import queue
 import random
 import sys
 import threading
@@ -255,40 +255,56 @@ def run_pipeline_two_pass(
     total_batches = len(chunk_batches)
     completed_batches = 0
     pace_batches = _should_pace_batches(pass1_backend)
+
     def _p1_label() -> str:
         return pass1_backend.last_used_label() if hasattr(pass1_backend, "last_used_label") else pass1_backend.label
 
     def _p2_label() -> str:
         return pass2_backend.last_used_label() if hasattr(pass2_backend, "last_used_label") else pass2_backend.label
 
-    with ThreadPoolExecutor(max_workers=_p1_workers) as executor:
-        futures = []
-        for index, batch in enumerate(chunk_batches):
-            if pace_batches and index > 0:
-                time.sleep(random.uniform(1.0, 3.0))
-            def _p1_task(b=batch):
-                stmts = extract_raw_statements_batched(b, pass1_backend, _p1_batch)
-                return stmts, _p1_label()
-            f = executor.submit(_p1_task)
-            futures.append(f)
-        last_completion = t0
-        for future in as_completed(futures):
-            try:
-                batch_statements, backend_label = future.result()
-                all_statements.extend(batch_statements)
-                completed_batches += 1
-                now = time.perf_counter()
-                batch_elapsed = now - last_completion
-                pass_elapsed = now - t0
-                last_completion = now
-                print(
-                    f"  Pass 1 progress: {completed_batches}/{total_batches} batches complete "
-                    f"({len(all_statements)} raw statements, {batch_elapsed:.0f}s/batch, "
-                    f"{pass_elapsed:.0f}s total) [{backend_label}]"
-                )
-            except Exception as exc:
-                logging.warning("Pass 1 batch failed: %s", exc)
-                continue
+    from backend.pool import BackendPool as _BackendPool
+    if isinstance(pass1_backend, _BackendPool):
+        # Pool dispatch: each backend gets a proportional slice of chunks at its
+        # own preferred batch size, all running concurrently.
+        all_statements = pass1_backend.dispatch(
+            chunks,
+            lambda subset, backend, bs: extract_raw_statements_batched(subset, backend, bs),
+            _p1_batch,
+        )
+        used_labels = ", ".join(pass1_backend.member_labels())
+        print(
+            f"  Pass 1 dispatch: {len(chunks)} chunks → "
+            f"{len(pass1_backend._backends)} backends [{used_labels}]"
+        )
+    else:
+        with ThreadPoolExecutor(max_workers=_p1_workers) as executor:
+            futures = []
+            for index, batch in enumerate(chunk_batches):
+                if pace_batches and index > 0:
+                    time.sleep(random.uniform(1.0, 3.0))
+                def _p1_task(b=batch):
+                    stmts = extract_raw_statements_batched(b, pass1_backend, _p1_batch)
+                    return stmts, _p1_label()
+                f = executor.submit(_p1_task)
+                futures.append(f)
+            last_completion = t0
+            for future in as_completed(futures):
+                try:
+                    batch_statements, backend_label = future.result()
+                    all_statements.extend(batch_statements)
+                    completed_batches += 1
+                    now = time.perf_counter()
+                    batch_elapsed = now - last_completion
+                    pass_elapsed = now - t0
+                    last_completion = now
+                    print(
+                        f"  Pass 1 progress: {completed_batches}/{total_batches} batches complete "
+                        f"({len(all_statements)} raw statements, {batch_elapsed:.0f}s/batch, "
+                        f"{pass_elapsed:.0f}s total) [{backend_label}]"
+                    )
+                except Exception as exc:
+                    logging.warning("Pass 1 batch failed: %s", exc)
+                    continue
 
     p1_elapsed = time.perf_counter() - t0
     print(f"Pass 1 complete: {len(all_statements)} raw statements extracted ({p1_elapsed:.0f}s)")
@@ -304,40 +320,55 @@ def run_pipeline_two_pass(
         f"[{pass2_backend.label}:{pass2_backend.model}]..."
     )
     t0 = time.perf_counter()
-    chunk_size = max(_p2_batch * 4, 32)
-    statement_chunks = [
-        all_statements[i:i + chunk_size]
-        for i in range(0, len(all_statements), chunk_size)
-    ]
     all_facts: List[Fact] = []
-    total_statement_batches = len(statement_chunks)
-    completed_statement_batches = 0
-    with ThreadPoolExecutor(max_workers=_p2_workers) as executor:
-        futures = []
-        for chunk in statement_chunks:
-            def _p2_task(c=chunk):
-                facts = assign_concepts_to_statements(c, pass2_backend, seeds, _p2_batch, use_strict)
-                return facts, _p2_label()
-            f = executor.submit(_p2_task)
-            futures.append(f)
-        last_completion = t0
-        for future in as_completed(futures):
-            try:
-                batch_facts, backend_label = future.result()
-                all_facts.extend(batch_facts)
-                completed_statement_batches += 1
-                now = time.perf_counter()
-                batch_elapsed = now - last_completion
-                pass_elapsed = now - t0
-                last_completion = now
-                print(
-                    f"  Pass 2 progress: {completed_statement_batches}/{total_statement_batches} batches complete "
-                    f"({len(all_facts)} facts, {batch_elapsed:.0f}s/batch, "
-                    f"{pass_elapsed:.0f}s total) [{backend_label}]"
-                )
-            except Exception as exc:
-                logging.warning("Pass 2 batch failed: %s", exc)
-                continue
+
+    from backend.pool import BackendPool as _BackendPool
+    if isinstance(pass2_backend, _BackendPool):
+        # Pool dispatch: each backend gets a proportional slice of all statements
+        # and processes it at its own preferred batch size concurrently.
+        def _p2_process(subset, backend, batch_size):
+            return assign_concepts_to_statements(subset, backend, seeds, batch_size, use_strict)
+
+        all_facts = pass2_backend.dispatch(all_statements, _p2_process, _p2_batch)
+        used_labels = ", ".join(pass2_backend.member_labels())
+        print(
+            f"  Pass 2 dispatch: {len(all_statements)} statements → "
+            f"{len(pass2_backend._backends)} backends [{used_labels}]"
+        )
+    else:
+        chunk_size = max(_p2_batch * 4, 32)
+        statement_chunks = [
+            all_statements[i:i + chunk_size]
+            for i in range(0, len(all_statements), chunk_size)
+        ]
+        total_statement_batches = len(statement_chunks)
+        completed_statement_batches = 0
+        with ThreadPoolExecutor(max_workers=_p2_workers) as executor:
+            futures = []
+            for chunk in statement_chunks:
+                def _p2_task(c=chunk):
+                    facts = assign_concepts_to_statements(c, pass2_backend, seeds, _p2_batch, use_strict)
+                    return facts, _p2_label()
+                f = executor.submit(_p2_task)
+                futures.append(f)
+            last_completion = t0
+            for future in as_completed(futures):
+                try:
+                    batch_facts, backend_label = future.result()
+                    all_facts.extend(batch_facts)
+                    completed_statement_batches += 1
+                    now = time.perf_counter()
+                    batch_elapsed = now - last_completion
+                    pass_elapsed = now - t0
+                    last_completion = now
+                    print(
+                        f"  Pass 2 progress: {completed_statement_batches}/{total_statement_batches} batches complete "
+                        f"({len(all_facts)} facts, {batch_elapsed:.0f}s/batch, "
+                        f"{pass_elapsed:.0f}s total) [{backend_label}]"
+                    )
+                except Exception as exc:
+                    logging.warning("Pass 2 batch failed: %s", exc)
+                    continue
 
     p2_elapsed = time.perf_counter() - t0
     print(f"Pass 2 complete: {len(all_facts)} facts with concept names ({p2_elapsed:.0f}s)")
@@ -398,7 +429,6 @@ def run_pipeline_streaming(
     chunk_batches = list(generate_chunk_batches(chunks, batch_size=_p1_batch))
     total_batches = len(chunk_batches)
 
-    statement_q: queue.Queue = queue.Queue()
     seeds_ready = threading.Event()
     seeds_holder: List = [None]   # written before seeds_ready is set; read after
     all_statements: List[dict] = []
@@ -415,14 +445,28 @@ def run_pipeline_streaming(
     else:
         seed_threshold = max(1, int(total_batches * 0.4))
 
-    # ── Pass 2 consumer (runs in its own thread, unblocked by seeds_ready) ─
-    # Accumulate raw statements from the queue into chunk_size blocks before
-    # dispatching, matching the barrier-mode batch sizing for quality parity.
-    chunk_size = max(_p2_batch * 4, 32)
-    p2_first_submit_time: List[Optional[float]] = [None]   # set when first batch fires
+    # ── Shared statement buffer ───────────────────────────────────────────
+    # Pass 1 appends to this deque; Pass 2 workers pull from it at their own
+    # preferred batch size.  p1_done signals that no more statements will arrive.
+    _stmt_buf: deque = deque()
+    _stmt_lock = threading.Lock()
+    _p1_done = threading.Event()
+    p2_first_submit_time: List[Optional[float]] = [None]
 
     def _s_p2_label() -> str:
         return pass2_backend.last_used_label() if hasattr(pass2_backend, "last_used_label") else pass2_backend.label
+
+    def _pull(n: int) -> Optional[List[dict]]:
+        """Pull up to n statements from the shared buffer.
+        Returns None when the buffer is empty AND Pass 1 is finished."""
+        while True:
+            with _stmt_lock:
+                if _stmt_buf:
+                    batch = [_stmt_buf.popleft() for _ in range(min(n, len(_stmt_buf)))]
+                    return batch
+            if _p1_done.is_set():
+                return None   # truly empty and no more coming
+            time.sleep(0.05)  # brief spin-wait for next P1 result
 
     def _pass2_consumer() -> None:
         seeds_ready.wait()
@@ -431,59 +475,118 @@ def run_pipeline_streaming(
         if use_strict:
             print("Pass 2 [streaming]: strict seed enforcement enabled")
 
-        p2_futures = []
-        pending: List[dict] = []
-        p2_batch_num = 0
+        from backend.pool import BackendPool as _BackendPool
+        if isinstance(pass2_backend, _BackendPool):
+            # Each backend worker loops independently, pulling its preferred
+            # batch size from the shared buffer until the buffer is exhausted.
+            p2_facts_lock = threading.Lock()
+            p2_batch_num_lock = threading.Lock()
+            p2_batch_num = [0]
 
-        def _dispatch(statements: List[dict], executor: ThreadPoolExecutor) -> None:
-            nonlocal p2_batch_num
-            if not statements:
-                return
-            p2_batch_num += 1
-            if p2_first_submit_time[0] is None:
-                p2_first_submit_time[0] = time.perf_counter()
-            print(
-                f"  Pass 2 [streaming]: dispatching batch {p2_batch_num} "
-                f"({len(statements)} statements)"
+            _PERMANENT_QUOTA_MARKERS = (
+                "daily free allocation", "neurons", "daily", "upgrade",
             )
-            def _p2_task(s=statements):
-                facts = assign_concepts_to_statements(s, pass2_backend, seeds, _p2_batch, use_strict)
-                return facts, _s_p2_label()
-            f = executor.submit(_p2_task)
-            p2_futures.append(f)
+            _MAX_CONSECUTIVE_FAILURES = 3
 
-        with ThreadPoolExecutor(max_workers=_p2_workers) as executor:
-            while True:
-                batch = statement_q.get()
-                if batch is None:   # sentinel
-                    break
-                pending.extend(batch)
-                while len(pending) >= chunk_size:
-                    _dispatch(pending[:chunk_size], executor)
-                    pending = pending[chunk_size:]
-
-            # Flush any remainder after sentinel
-            _dispatch(pending, executor)
-
-            completed_p2 = 0
-            p2_t0 = p2_first_submit_time[0] or time.perf_counter()
-            last_completion = p2_t0
-            for future in as_completed(p2_futures):
-                try:
-                    results, backend_label = future.result()
-                    all_facts.extend(results)
-                    completed_p2 += 1
-                    now = time.perf_counter()
-                    batch_elapsed = now - last_completion
-                    pass_elapsed = now - p2_t0
-                    last_completion = now
+            def _worker(backend, bs):
+                from backend.base import LLMBackendError as _LLMBackendError
+                consecutive_failures = 0
+                while True:
+                    stmts = _pull(bs)
+                    if stmts is None:
+                        return
+                    with p2_batch_num_lock:
+                        p2_batch_num[0] += 1
+                        bnum = p2_batch_num[0]
+                    if p2_first_submit_time[0] is None:
+                        p2_first_submit_time[0] = time.perf_counter()
+                    try:
+                        facts = assign_concepts_to_statements(
+                            stmts, backend, seeds, bs, use_strict,
+                            raise_on_json_failure=True,
+                        )
+                    except _LLMBackendError as exc:
+                        exc_str = str(exc).lower()
+                        is_permanent = any(m in exc_str for m in _PERMANENT_QUOTA_MARKERS)
+                        consecutive_failures += 1
+                        too_many = consecutive_failures >= _MAX_CONSECUTIVE_FAILURES
+                        if is_permanent or too_many:
+                            reason = "daily quota exhausted" if is_permanent else f"{consecutive_failures} consecutive failures"
+                            print(
+                                f"  Pass 2 [streaming]: [{backend.label}] retiring worker ({reason}), "
+                                f"re-queuing {len(stmts)} statements for other backends"
+                            )
+                            with _stmt_lock:
+                                _stmt_buf.extend(stmts)
+                            return
+                        print(
+                            f"  Pass 2 [streaming]: [{backend.label}] batch {bnum} "
+                            f"failed, re-queuing {len(stmts)} statements"
+                        )
+                        with _stmt_lock:
+                            _stmt_buf.extend(stmts)
+                        continue
+                    consecutive_failures = 0
+                    with p2_facts_lock:
+                        all_facts.extend(facts)
                     print(
-                        f"  Pass 2 [streaming]: batch {completed_p2}/{p2_batch_num} complete "
-                        f"({len(results)} facts, {len(all_facts)} total, "
-                        f"{batch_elapsed:.0f}s/batch, {pass_elapsed:.0f}s total) [{backend_label}]"
+                        f"  Pass 2 [streaming]: [{backend.label}] batch {bnum} done "
+                        f"({len(facts)} facts, {len(all_facts)} total)"
                     )
-                except Exception as exc:
-                    logging.warning("Streaming Pass 2 batch failed: %s", exc)
+
+            worker_threads = []
+            for backend, w in zip(pass2_backend._backends, pass2_backend._weights):
+                bs = backend.preferred_batch_size or _p2_batch
+                for _ in range(max(1, w)):
+                    t = threading.Thread(target=_worker, args=(backend, bs), daemon=True)
+                    worker_threads.append(t)
+                    t.start()
+            for t in worker_threads:
+                t.join()
+        else:
+            # Single backend: pull at _p2_batch size, submit to executor.
+            p2_futures = []
+            p2_batch_num = 0
+
+            def _dispatch(statements: List[dict], executor: ThreadPoolExecutor) -> None:
+                nonlocal p2_batch_num
+                if not statements:
+                    return
+                p2_batch_num += 1
+                if p2_first_submit_time[0] is None:
+                    p2_first_submit_time[0] = time.perf_counter()
+                def _p2_task(s=statements):
+                    facts = assign_concepts_to_statements(s, pass2_backend, seeds, _p2_batch, use_strict)
+                    return facts, _s_p2_label()
+                p2_futures.append(executor.submit(_p2_task))
+
+            with ThreadPoolExecutor(max_workers=_p2_workers) as executor:
+                while not _p1_done.is_set() or _stmt_buf:
+                    batch = _pull(_p2_batch)
+                    if batch:
+                        _dispatch(batch, executor)
+                    else:
+                        break
+
+                completed_p2 = 0
+                p2_t0 = p2_first_submit_time[0] or time.perf_counter()
+                last_completion = p2_t0
+                for future in as_completed(p2_futures):
+                    try:
+                        results, backend_label = future.result()
+                        all_facts.extend(results)
+                        completed_p2 += 1
+                        now = time.perf_counter()
+                        batch_elapsed = now - last_completion
+                        pass_elapsed = now - p2_t0
+                        last_completion = now
+                        print(
+                            f"  Pass 2 [streaming]: batch {completed_p2}/{p2_batch_num} complete "
+                            f"({len(results)} facts, {len(all_facts)} total, "
+                            f"{batch_elapsed:.0f}s/batch, {pass_elapsed:.0f}s total) [{backend_label}]"
+                        )
+                    except Exception as exc:
+                        logging.warning("Streaming Pass 2 batch failed: %s", exc)
 
     consumer_thread = threading.Thread(target=_pass2_consumer, daemon=True)
     consumer_thread.start()
@@ -515,7 +618,8 @@ def run_pipeline_streaming(
             try:
                 batch_statements, backend_label = future.result()
                 all_statements.extend(batch_statements)
-                statement_q.put(batch_statements)
+                with _stmt_lock:
+                    _stmt_buf.extend(batch_statements)
                 completed_batches += 1
                 now = time.perf_counter()
                 batch_elapsed = now - last_completion
@@ -549,7 +653,7 @@ def run_pipeline_streaming(
         seeds_holder[0] = seeds
         seeds_ready.set()
 
-    statement_q.put(None)  # sentinel: no more batches after this
+    _p1_done.set()  # signal: no more statements will arrive
 
     # ── Wait for Pass 2 to drain ──────────────────────────────────────────
     consumer_thread.join()

@@ -8,7 +8,7 @@ Flash / Flash-Lite models continue to use openai_compat — this backend
 is only needed when the OpenAI-compat path returns 404 or malformed JSON.
 """
 
-import concurrent.futures
+import threading
 import time
 import random
 from typing import Optional
@@ -28,9 +28,9 @@ _INITIAL_BACKOFF_SECONDS = 5.0
 _BACKOFF_MULTIPLIER = 2.0
 _MAX_BACKOFF_SECONDS = 60.0
 
-# Hard timeout per request — prevents a stalled Gemini call from holding a
-# pool semaphore slot for minutes.  90s is generous for longest synthesis pages.
-_REQUEST_TIMEOUT_SECONDS = 90
+# Hard timeout per request via SDK-level HttpOptions — avoids zombie threads
+# from the thread-wrapper approach.
+_REQUEST_TIMEOUT_SECONDS = 150
 
 
 class GeminiBackend(LLMBackend):
@@ -59,7 +59,7 @@ class GeminiBackend(LLMBackend):
                 "Set the GEMINI_API_KEY environment variable."
             )
 
-        self._client = genai.Client(api_key=config.api_key)
+        self._api_key = config.api_key
         self._retry_count = 0
         self._fallback_hops = 0
 
@@ -96,19 +96,35 @@ class GeminiBackend(LLMBackend):
 
         for attempt in range(_MAX_RETRIES):
             try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
-                    _fut = _ex.submit(
-                        self._client.models.generate_content,
-                        model=self._config.model,
-                        contents=actual_prompt,
-                        config=generate_config,
-                    )
+                _result: list = [None]
+                _error: list = [None]
+
+                def _api_call():
                     try:
-                        response = _fut.result(timeout=_REQUEST_TIMEOUT_SECONDS)
-                    except concurrent.futures.TimeoutError:
-                        raise LLMBackendError(
-                            f"[{self.label}] Request timed out after {_REQUEST_TIMEOUT_SECONDS}s"
+                        client = genai.Client(api_key=self._api_key)
+                        _result[0] = client.models.generate_content(
+                            model=self._config.model,
+                            contents=actual_prompt,
+                            config=generate_config,
                         )
+                    except Exception as _e:
+                        _error[0] = _e
+
+                _t = threading.Thread(target=_api_call, daemon=True)
+                _t.start()
+                _t.join(timeout=_REQUEST_TIMEOUT_SECONDS)
+                if _t.is_alive():
+                    raise LLMBackendError(
+                        f"[{self.label}] Request timed out after {_REQUEST_TIMEOUT_SECONDS}s"
+                    )
+                if _error[0] is not None:
+                    raise _error[0]
+                response = _result[0]
+                if not response.candidates:
+                    reason = getattr(response, "prompt_feedback", "no candidates")
+                    raise LLMBackendError(
+                        f"[{self.label}] Response blocked or empty from {self._config.model}: {reason}"
+                    )
                 text = response.text
                 if not text or not text.strip():
                     raise LLMBackendError(
@@ -122,19 +138,22 @@ class GeminiBackend(LLMBackend):
                 last_exc = exc
                 exc_str = str(exc).lower()
                 is_rate_limit = "429" in str(exc) or "quota" in exc_str or "rate" in exc_str
-                is_retryable = is_rate_limit or "500" in str(exc) or "503" in str(exc)
+                is_timeout = "timeout" in exc_str or "deadline" in exc_str or "timed out" in exc_str
+                is_retryable = is_rate_limit or is_timeout or "500" in str(exc) or "503" in str(exc)
 
                 if not is_retryable or attempt + 1 >= _MAX_RETRIES:
+                    ctx = f" [{context}]" if context else ""
+                    print(f"  [{self.label}{ctx}] Error on {self._config.model}: {exc}")
                     break
 
                 self._retry_count += 1
                 jitter = random.uniform(0, backoff * 0.3)
                 sleep_time = min(backoff + jitter, _MAX_BACKOFF_SECONDS)
                 ctx = f" [{context}]" if context else ""
+                label = "Rate limited" if is_rate_limit else "Timed out" if is_timeout else "Error"
                 print(
-                    f"  [{self.label}{ctx}] {'Rate limited' if is_rate_limit else 'Error'} "
-                    f"on {self._config.model} (attempt {attempt + 1}/{_MAX_RETRIES}), "
-                    f"retrying in {sleep_time:.0f}s..."
+                    f"  [{self.label}{ctx}] {label} on {self._config.model} "
+                    f"(attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {sleep_time:.0f}s..."
                 )
                 time.sleep(sleep_time)
                 backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF_SECONDS)
