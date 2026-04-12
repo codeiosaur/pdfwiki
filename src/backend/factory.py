@@ -119,6 +119,7 @@ def _build_config(
     structured_output: bool = False,
     json_mode: bool = False,
     wrap_array_schema: bool = False,
+    preferred_batch_size: Optional[int] = None,
 ) -> BackendConfig:
     """Build a BackendConfig, resolving the API key if not provided."""
     if api_key is None:
@@ -143,6 +144,7 @@ def _build_config(
         structured_output=structured_output,
         json_mode=json_mode,
         wrap_array_schema=wrap_array_schema,
+        preferred_batch_size=preferred_batch_size,
     )
 
 
@@ -339,6 +341,7 @@ def _build_backend_from_spec(spec: dict, name: str) -> LLMBackend:
     structured_output = bool(spec.get("structured_output", False))
     json_mode = bool(spec.get("json_mode", False))
     wrap_array_schema = bool(spec.get("wrap_array_schema", False))
+    preferred_batch_size = spec.get("batch_size") or None
 
     config = _build_config(
         provider, base_url, model,
@@ -351,6 +354,7 @@ def _build_backend_from_spec(spec: dict, name: str) -> LLMBackend:
         structured_output=structured_output,
         json_mode=json_mode,
         wrap_array_schema=wrap_array_schema,
+        preferred_batch_size=int(preferred_batch_size) if preferred_batch_size else None,
     )
     log_backend_config(name, provider, base_url, model, config.api_key)
     backend = _create_backend_from_config(config)

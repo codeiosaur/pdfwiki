@@ -23,6 +23,8 @@ from generate.wiki_helpers import inject_wikilinks
 if TYPE_CHECKING:
     from backend.base import LLMBackend
 
+from backend.pool import BackendPool
+
 
 # ---------------------------------------------------------------------------
 # Prompt builder
@@ -86,6 +88,28 @@ def _extract_frontmatter(wiki_page: str) -> str:
     if end == -1:
         return ""
     return wiki_page[: end + 4]
+
+
+def _add_backend_attribution(frontmatter: str, backend_label: str, model: str) -> str:
+    """
+    Add backend and model attribution to the YAML frontmatter.
+
+    If frontmatter is empty, create a minimal one.  Otherwise, insert the
+    attribution before the closing '---'.
+    """
+    if not frontmatter:
+        # Create minimal frontmatter if none exists
+        return f"---\ngenerated_by_backend: {backend_label}\ngenerated_by_model: {model}\n---"
+
+    # Insert before closing '---'
+    closing_idx = frontmatter.rfind("\n---")
+    if closing_idx == -1:
+        return frontmatter
+
+    # Insert new fields before the closing delimiter
+    insert_point = closing_idx
+    new_lines = f"generated_by_backend: {backend_label}\ngenerated_by_model: {model}\n"
+    return frontmatter[:insert_point] + "\n" + new_lines + frontmatter[insert_point:]
 
 
 def _extract_tail_sections(wiki_page: str) -> str:
@@ -162,7 +186,8 @@ def synthesize_pages(
         for c, facts in grouped.items()
     }
 
-    def _synthesize_one(concept: str) -> tuple[str, str]:
+    def _synthesize_one(concept: str, synth_backend: "LLMBackend") -> tuple[str, str]:
+        """Synthesize a single concept using the given backend."""
         import time as _time
         _t0 = _time.perf_counter()
         display_title = normalize_page_title(concept)
@@ -181,8 +206,8 @@ def synthesize_pages(
         prompt = _build_synthesis_prompt(display_title, fact_contents, related_titles)
 
         try:
-            raw = backend.generate(prompt, context=display_title,
-                                   system_prompt=_SYNTHESIS_SYSTEM_PROMPT)
+            raw = synth_backend.generate(prompt, context=display_title,
+                                         system_prompt=_SYNTHESIS_SYSTEM_PROMPT)
         except Exception as exc:
             logging.warning("Synthesis failed for '%s': %s", concept, exc)
             return display_title, fallback
@@ -204,20 +229,51 @@ def synthesize_pages(
         frontmatter = _extract_frontmatter(fallback)
         tail = _extract_tail_sections(fallback)
 
+        # Add backend attribution to frontmatter
+        used_label = synth_backend.last_used_label() if hasattr(synth_backend, "last_used_label") else synth_backend.label
+        model = synth_backend.model if hasattr(synth_backend, "model") else "unknown"
+        frontmatter = _add_backend_attribution(frontmatter, used_label, model)
+
         parts = [p for p in [frontmatter, body, tail] if p]
         page = "\n\n".join(parts)
 
-        used_label = backend.last_used_label() if hasattr(backend, "last_used_label") else backend.label
         elapsed = _time.perf_counter() - _t0
         print(f"  Pass 3 [synthesis]: wrote '{display_title}' [{used_label}] ({elapsed:.0f}s)")
         return display_title, page
 
     results: dict[str, str] = {}
 
-    if workers > 1:
+    # Use dispatch() if backend is a BackendPool, otherwise use ThreadPoolExecutor
+    if isinstance(backend, BackendPool):
+        def _process_batch(concepts: List[str], synth_backend: "LLMBackend", batch_size: int) -> List[tuple[str, str]]:
+            """Process a batch of concepts using the given backend."""
+            batch_results = []
+            for concept in concepts:
+                try:
+                    title, page = _synthesize_one(concept, synth_backend)
+                    if page:
+                        batch_results.append((title, page))
+                except Exception as exc:
+                    logging.warning("Synthesis error for concept: %s", exc)
+                    display_title = normalize_page_title(concept)
+                    if wiki_pages.get(display_title):
+                        batch_results.append((display_title, wiki_pages[display_title]))
+            return batch_results
+
+        # Use work-stealing dispatch: each concept is an item, workers pull dynamically
+        batch_results = backend.dispatch(
+            concept_names,
+            _process_batch,
+            default_batch_size=1  # One concept per batch unit
+        )
+        # Flatten results: dispatch returns list of (title, page) tuples
+        for title, page in batch_results:
+            results[title] = page
+    elif workers > 1:
+        # Fallback for non-pool backends: use ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_concept = {
-                executor.submit(_synthesize_one, c): c for c in concept_names
+                executor.submit(_synthesize_one, c, backend): c for c in concept_names
             }
             for future in as_completed(future_to_concept):
                 concept = future_to_concept[future]
@@ -231,8 +287,9 @@ def synthesize_pages(
                     if wiki_pages.get(display_title):
                         results[display_title] = wiki_pages[display_title]
     else:
+        # Sequential synthesis
         for concept in concept_names:
-            title, page = _synthesize_one(concept)
+            title, page = _synthesize_one(concept, backend)
             if page:
                 results[title] = page
 

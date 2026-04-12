@@ -6,10 +6,48 @@ PDF-to-Wiki: converts PDF documents into interlinked Obsidian wiki pages using a
 
 ## Quick Reference
 
-- **Run:** `python3 src/main.py` (reads config from `.env`)
+- **Run:** `python3 src/main.py` (reads config from `.env` and `backends.yaml`)
 - **Test:** `pytest tests/ -v`
 - **Source:** `src/` with packages: `backend/`, `extract/`, `transform/`, `generate/`, `ingest/`
 - **Config:** `.env` file (copy from `.env.example`). See `ARCHITECTURE.md` for all variables.
+- **Backends:** `backends.yaml` (copy from `backends.yaml.example`) defines multi-backend topology and which backends to use for each pass.
+
+## Configuration: backends.yaml
+
+The system uses standard Unix precedence for configuration:
+```
+shell env vars  >  .env file  >  backends.yaml (defaults)
+```
+
+**backends.yaml** (copy from `backends.yaml.example`) is the source of truth for:
+- Which backends are available (Ollama, OpenRouter, Groq, Cerebras, Gemini, etc.)
+- Which backends to use for Pass 1, Pass 2, and Pass 3 (see `passes:` section at bottom)
+- Backend-specific settings: workers, timeouts, structured output, fallback models, API keys (via env vars)
+
+**Structure:**
+```yaml
+backends:
+  backend-name:
+    base_url: https://api.service.com/v1  # or http://localhost:11434/v1 for Ollama
+    model: model-id
+    api_key_env: ENV_VAR_NAME              # Never hardcode keys; reference env var
+    workers: N                              # Concurrent requests from this backend
+    max_tokens: 4096
+    # ... other optional fields ...
+
+passes:
+  pass1: [backend1, backend2, ...]  # Work-stealing queue: faster backends pull more work
+  pass2: [backend1, backend2, ...]
+  pass3: [backend1, backend2, ...]
+```
+
+**Pass-specific env var overrides** let you change a single pass without editing the YAML:
+```bash
+PASS1_MODEL=mixtral-8x7b-32768 python3 src/main.py  # Override only Pass 1 model
+PASS2_WORKERS=4 python3 src/main.py                 # Override only Pass 2 workers
+```
+
+**Work-stealing distribution:** When multiple backends are listed for a pass, they share a work queue. Faster backends automatically pull more items—no pre-allocation needed.
 
 ## Key Architecture Decisions
 

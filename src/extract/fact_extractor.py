@@ -345,6 +345,7 @@ def assign_concepts_to_statements(
     seed_concepts: Optional[List[str]] = None,
     batch_size: int = 16,
     strict_seeds: bool = False,
+    raise_on_json_failure: bool = False,
 ) -> List[Fact]:
     """
     Pass 2: Given raw statements, assign each to a concept name.
@@ -462,6 +463,11 @@ Output ONLY a JSON array with one entry per statement:
             print(f"  [{_lbl}] JSON parse failed — {reason}{retry_msg}")
 
         if not isinstance(parsed, list):
+            if raise_on_json_failure:
+                from backend.base import LLMBackendError
+                raise LLMBackendError(
+                    f"JSON parse failed for batch {batch_num} after {_MAX_JSON_RETRIES} retries"
+                )
             continue
 
         concept_map: dict[int, str] = {}

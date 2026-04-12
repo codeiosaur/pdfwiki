@@ -61,6 +61,7 @@ class BackendConfig:
     structured_output: bool = False
     json_mode: bool = False
     wrap_array_schema: bool = False
+    preferred_batch_size: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.provider not in ("openai_compat", "anthropic", "gemini"):
@@ -91,6 +92,10 @@ class LLMBackend(ABC):
     @property
     def model(self) -> str:
         return self._config.model
+
+    @property
+    def preferred_batch_size(self) -> Optional[int]:
+        return self._config.preferred_batch_size
 
     def metrics(self) -> dict:
         """
