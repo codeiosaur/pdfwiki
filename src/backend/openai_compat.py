@@ -12,6 +12,7 @@ Includes:
 
 import random
 import time
+import re
 from typing import Any, Optional
 
 from backend.base import BackendConfig, LLMBackend, LLMBackendError
@@ -33,6 +34,22 @@ _OPENROUTER_HOSTS = {"openrouter.ai"}
 
 # Ollama default port — used to enable structured output enforcement
 _OLLAMA_DEFAULT_PORT = "11434"
+
+
+def _extract_retry_after(error_str: str) -> Optional[float]:
+    """
+    Extract Retry-After value from OpenAI-compatible error response.
+    Can be in seconds (integer) or HTTP-date format.
+    Example: 'Retry-After: 5' -> returns 5.0
+    """
+    try:
+        # Look for Retry-After header/field (case-insensitive)
+        match = re.search(r"Retry-After['\"]?\s*:\s*['\"]?([0-9.]+)", error_str, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+    except (ValueError, AttributeError):
+        pass
+    return None
 
 
 def _is_openrouter(base_url: str) -> bool:
@@ -306,7 +323,18 @@ class OpenAICompatBackend(LLMBackend):
                     if not (is_rate_limit or is_empty_response) or attempt >= _MAX_RETRIES:
                         break  # Stop retrying this model, try the next one
 
-                    wait_time = min(backoff, _MAX_BACKOFF_SECONDS) + random.uniform(0, 2.0)
+                    # Try to extract server-provided Retry-After from rate limit errors
+                    wait_time = backoff
+                    if is_rate_limit:
+                        server_delay = _extract_retry_after(str(exc))
+                        if server_delay is not None:
+                            wait_time = server_delay + 0.5  # Small buffer after server's suggested delay
+                        else:
+                            wait_time = min(backoff, _MAX_BACKOFF_SECONDS) + random.uniform(0, 2.0)
+                    else:
+                        # Empty response: use exponential backoff
+                        wait_time = min(backoff, _MAX_BACKOFF_SECONDS) + random.uniform(0, 2.0)
+
                     reason = "Rate limited" if is_rate_limit else "Empty response"
                     print(f"  [{tag}] {reason} on {model} (attempt {attempt + 1}/{_MAX_RETRIES + 1}), "
                           f"retrying in {round(wait_time)}s...")
