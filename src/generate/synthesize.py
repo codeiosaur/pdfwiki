@@ -157,7 +157,8 @@ def synthesize_pages(
     backend: "LLMBackend",
     wiki_pages: dict[str, str],
     workers: int = 1,
-) -> dict[str, str]:
+    streaming: bool = False,
+) -> dict[str, str] | list[tuple[str, str]]:
     """
     Generate a wiki page per concept via LLM synthesis.
 
@@ -174,9 +175,12 @@ def synthesize_pages(
         backend:    LLM backend used for generation.
         wiki_pages: Pre-rendered wiki pages keyed by display title (fallback).
         workers:    Parallel synthesis workers (default 1 = sequential).
+        streaming:  If True, return a list of (title, page) tuples as they complete.
+                    If False (default), return a dict after all synthesis completes.
 
     Returns:
-        dict mapping display title → synthesized Markdown page.
+        If streaming=False: dict mapping display title → synthesized Markdown page.
+        If streaming=True: list of (title, page) tuples (maintains order from work-stealing).
     """
     concept_names = sorted(grouped.keys())
     all_display_titles = {normalize_page_title(c) for c in concept_names}
@@ -241,6 +245,7 @@ def synthesize_pages(
         print(f"  Pass 3 [synthesis]: wrote '{display_title}' [{used_label}] ({elapsed:.0f}s)")
         return display_title, page
 
+    results_list: list[tuple[str, str]] = []
     results: dict[str, str] = {}
 
     # Use dispatch() if backend is a BackendPool, otherwise use ThreadPoolExecutor
@@ -268,6 +273,7 @@ def synthesize_pages(
         )
         # Flatten results: dispatch returns list of (title, page) tuples
         for title, page in batch_results:
+            results_list.append((title, page))
             results[title] = page
     elif workers > 1:
         # Fallback for non-pool backends: use ThreadPoolExecutor
@@ -280,17 +286,20 @@ def synthesize_pages(
                 try:
                     title, page = future.result()
                     if page:
+                        results_list.append((title, page))
                         results[title] = page
                 except Exception as exc:
                     logging.warning("Synthesis error for '%s': %s", concept, exc)
                     display_title = normalize_page_title(concept)
                     if wiki_pages.get(display_title):
+                        results_list.append((display_title, wiki_pages[display_title]))
                         results[display_title] = wiki_pages[display_title]
     else:
         # Sequential synthesis
         for concept in concept_names:
             title, page = _synthesize_one(concept, backend)
             if page:
+                results_list.append((title, page))
                 results[title] = page
 
-    return results
+    return results_list if streaming else results

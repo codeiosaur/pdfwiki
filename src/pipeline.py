@@ -94,7 +94,14 @@ def validate_pipeline_inputs(pdf_path: str, output_dir: Path, seeds_file: Option
         sys.exit(1)
 
 
-def write_vault(pages: dict[str, str], output_dir: Path) -> None:
+def write_vault(pages: dict[str, str] | Iterator[tuple[str, str]], output_dir: Path) -> None:
+    """
+    Write wiki pages to vault directory.
+
+    Pages can be a dict (all at once) or an iterator/generator (streaming).
+    Streaming mode writes pages incrementally as they arrive, improving resilience
+    to interruption and providing real-time feedback.
+    """
     if not output_dir.exists():
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -113,8 +120,14 @@ def write_vault(pages: dict[str, str], output_dir: Path) -> None:
                 f"contains {len(existing)} file(s). Adding pages to existing directory."
             )
 
+    # Handle both dict (batch) and iterator (streaming) inputs
+    if isinstance(pages, dict):
+        pages_iter = pages.items()
+    else:
+        pages_iter = pages
+
     written = 0
-    for title, content in pages.items():
+    for title, content in pages_iter:
         safe_name = title.translate(_INVALID_FILENAME_CHARS).strip() or "Unnamed Concept"
         file_path = output_dir / f"{safe_name}.md"
         try:

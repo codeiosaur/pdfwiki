@@ -146,14 +146,45 @@ def run_application(args) -> None:
         print(f"Consolidation complete ({time.perf_counter() - _t:.0f}s)")
 
     enrich_threshold = int(os.getenv("PIPELINE_ENRICH_THRESHOLD", "6"))
+
+    # OPTIMIZATION: Split concepts into ready (already have enough facts) vs thin (need enrichment).
+    # Render ready concepts immediately while enrichment runs on thin concepts in parallel.
+    ready_grouped = {}
+    thin_grouped = {}
     if enrich_threshold > 0:
-        print(f"\nEnrichment pass: filling concepts with < {enrich_threshold} facts...")
+        for concept, facts in final_grouped.items():
+            if len(facts) >= enrich_threshold:
+                ready_grouped[concept] = facts
+            else:
+                thin_grouped[concept] = facts
+    else:
+        ready_grouped = final_grouped
+
+    # Render ready concepts now (while enrichment runs)
+    enhanced_mode = os.getenv("ENHANCED_PAGE_MODE", "1").strip().lower() in {"1", "true", "yes"}
+    mode_label = "wiki" if enhanced_mode else "standard"
+    render_fn = generate_pages_wiki if enhanced_mode else generate_pages
+
+    if ready_grouped:
+        print(f"\nRendering {len(ready_grouped)} ready concepts (>= {enrich_threshold} facts)...")
+        _t_render = time.perf_counter()
+        ready_pages = render_fn(ready_grouped, workers=render_workers)
+        print(f"  Ready concepts rendered ({time.perf_counter() - _t_render:.0f}s)")
+    else:
+        ready_pages = {}
+
+    # Enrich thin concepts in parallel while ready rendering just happened
+    if thin_grouped and enrich_threshold > 0:
+        print(f"\nEnrichment pass: filling {len(thin_grouped)} concepts with < {enrich_threshold} facts...")
         _t = time.perf_counter()
-        final_grouped = enrich_thin_concepts(
-            final_grouped, backend=canonicalize_backend, min_facts=enrich_threshold,
+        thin_grouped = enrich_thin_concepts(
+            thin_grouped, backend=canonicalize_backend, min_facts=enrich_threshold,
             workers=enrich_workers,
         )
         print(f"Enrichment complete ({time.perf_counter() - _t:.0f}s)")
+
+    # Combine ready and enriched thin concepts
+    final_grouped = {**ready_grouped, **thin_grouped}
 
     min_publishable = int(os.getenv("PIPELINE_MIN_PUBLISHABLE_FACTS", "2"))
     if min_publishable > 1:
@@ -180,13 +211,32 @@ def run_application(args) -> None:
     for concept, facts in sorted(final_grouped.items(), key=lambda x: -len(x[1])):
         print(f"  {concept} -> {len(facts)} facts")
 
-    enhanced_mode = os.getenv("ENHANCED_PAGE_MODE", "1").strip().lower() in {"1", "true", "yes"}
-    if enhanced_mode:
-        pages = generate_pages_wiki(final_grouped, workers=render_workers)
-        mode_label = "wiki"
+    # Render thin concepts (after enrichment + pruning)
+    if thin_grouped:
+        thin_grouped_final = {c: facts for c, facts in final_grouped.items() if c in thin_grouped}
+        if thin_grouped_final:
+            print(f"\nRendering {len(thin_grouped_final)} enriched concepts...")
+            _t_render = time.perf_counter()
+            thin_pages = render_fn(thin_grouped_final, workers=render_workers)
+            print(f"  Enriched concepts rendered ({time.perf_counter() - _t_render:.0f}s)")
+        else:
+            thin_pages = {}
     else:
-        pages = generate_pages(final_grouped, workers=render_workers)
-        mode_label = "standard"
+        thin_pages = {}
+
+    # Combine all rendered pages
+    pages = {**ready_pages, **thin_pages}
+
+    # Render any remaining concepts that weren't in ready or thin (shouldn't happen, but be safe)
+    rendered_concepts = set(pages.keys())
+    final_concepts_set = {concept for concept in final_grouped.keys()}
+    missing_concepts = final_concepts_set - rendered_concepts
+    if missing_concepts:
+        missing_grouped = {c: final_grouped[c] for c in missing_concepts}
+        print(f"\nRendering {len(missing_grouped)} remaining concepts...")
+        missing_pages = render_fn(missing_grouped, workers=render_workers)
+        pages.update(missing_pages)
+
     skipped_pages = max(0, len(final_grouped) - len(pages))
     print(f"\nGenerated {len(pages)} concept pages ({mode_label} mode)")
     if skipped_pages:
@@ -194,24 +244,39 @@ def run_application(args) -> None:
 
     if use_synthesis:
         print(
-            f"\nPass 3 [synthesis]: Rewriting {len(pages)} pages "
+            f"\nPass 3 [synthesis]: Rewriting {len(final_grouped)} concepts "
             f"[{pass3_backend.label}:{pass3_backend.model}]..."
         )
         _t = time.perf_counter()
-        pages = synthesize_pages(
+        # Stream synthesis results directly to vault (incremental writes)
+        pages_streaming = synthesize_pages(
             final_grouped,
             backend=pass3_backend,
             wiki_pages=pages,
             workers=synthesis_workers,
+            streaming=True,  # Returns list of (title, page) tuples as completed
         )
-        print(f"Pass 3 [synthesis]: {len(pages)} pages written ({time.perf_counter() - _t:.0f}s)")
 
-    preview = render_pages_preview(pages, max_pages=2)
+        # Preview before writing (sample first result if streaming)
+        preview_page = None
+        if isinstance(pages_streaming, list) and pages_streaming:
+            _, preview_page = pages_streaming[0]
+
+        write_vault(pages_streaming, output_path)
+        print(f"Pass 3 [synthesis]: completed ({time.perf_counter() - _t:.0f}s)")
+
+        # Update pages dict for preview below
+        pages = {title: page for title, page in pages_streaming}
+    else:
+        preview_page = None
+
+    preview = render_pages_preview(pages, max_pages=2) if not use_synthesis else None
     if preview:
         print("\n=== PAGE PREVIEW (FIRST 1-2) ===")
         print(preview)
-
-    write_vault(pages, output_path)
+    elif use_synthesis and preview_page:
+        print("\n=== PAGE PREVIEW (FIRST SYNTHESIZED) ===")
+        print(preview_page[:500] + "..." if len(preview_page) > 500 else preview_page)
 
     eval_result = evaluate_concepts(final_grouped)
 
