@@ -39,12 +39,27 @@ _OLLAMA_DEFAULT_PORT = "11434"
 def _extract_retry_after(error_str: str) -> Optional[float]:
     """
     Extract Retry-After value from OpenAI-compatible error response.
-    Can be in seconds (integer) or HTTP-date format.
-    Example: 'Retry-After: 5' -> returns 5.0
+    Handles multiple formats:
+    - Numeric seconds: 'Retry-After: 5' -> 5.0
+    - Duration string (Groq): 'Please try again in 15m39.8592s' -> 939.8592
+    - ISO duration: '1m', '30s', etc.
     """
     try:
-        # Look for Retry-After header/field (case-insensitive)
+        # Format 1: Numeric Retry-After header/field (case-insensitive)
         match = re.search(r"Retry-After['\"]?\s*:\s*['\"]?([0-9.]+)", error_str, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+
+        # Format 2: Groq-style duration in message (e.g., "15m39.8592s")
+        # Looks for patterns like "15m39.8592s" or "15m 39s" or "39.8592s"
+        match = re.search(r"in\s+(\d+)m([\d.]+)s", error_str)
+        if match:
+            minutes = int(match.group(1))
+            seconds = float(match.group(2))
+            return minutes * 60 + seconds
+
+        # Format 3: Just seconds with 's' suffix (e.g., "39.8592s")
+        match = re.search(r"in\s+([\d.]+)s\b", error_str)
         if match:
             return float(match.group(1))
     except (ValueError, AttributeError):
@@ -232,22 +247,46 @@ class OpenAICompatBackend(LLMBackend):
             }
 
         # Client-side model rotation: try the primary model, then each fallback in order.
-        # Each model gets its own retry budget with exponential backoff + jitter.
-        # Server-side OpenRouter fallbacks (extra_body["models"]) are NOT used —
-        # we rotate explicitly so failures are visible and identified per-model.
-        models_to_try = [self._config.model]
-        if self._is_openrouter and self._fallback_models:
-            models_to_try += self._fallback_models
+        # Primary model + fallback queue.
+        # Primary model is ALWAYS preferred if not on cooldown or permanently failed.
+        # Fallbacks are rotated (not retried individually) when primary is unavailable.
+        from collections import deque
+
+        primary_model = self._config.model
+        fallback_models = deque(self._fallback_models if self._is_openrouter and self._fallback_models else [])
+
+        primary_cooldown_until: Optional[float] = None
+        permanently_failed: set[str] = set()
+        last_exc: Optional[Exception] = None
 
         # extra_body without the "models" key (we rotate client-side instead)
         base_extra_body = {k: v for k, v in extra_body.items() if k != "models"}
-
         tag = f"{self.label}" + (f" | {context}" if context else "")
-
-        last_exc: Optional[Exception] = None
         self._total_requests += 1
 
-        for model_idx, model in enumerate(models_to_try):
+        while True:
+            # Determine which model to use (primary if available, else next fallback)
+            if primary_model not in permanently_failed:
+                if primary_cooldown_until is None or time.time() >= primary_cooldown_until:
+                    model = primary_model
+                    primary_cooldown_until = None
+                elif fallback_models:
+                    model = fallback_models[0]
+                else:
+                    # Primary on cooldown, no fallbacks left — wait for primary to reset
+                    wait_until_reset = primary_cooldown_until - time.time()
+                    print(f"  [{tag}] All fallbacks exhausted, {primary_model} resumes in {round(wait_until_reset)}s...")
+                    time.sleep(wait_until_reset + 0.1)
+                    continue
+            elif fallback_models:
+                model = fallback_models[0]
+            else:
+                # All models failed permanently, no fallbacks
+                tried = primary_model + (f", {', '.join(self._fallback_models)}" if self._fallback_models else "")
+                raise LLMBackendError(
+                    f"[{self.label}] All models failed permanently ({tried}). Last error: {last_exc}"
+                )
+
             kwargs["model"] = model
             if base_extra_body:
                 kwargs["extra_body"] = base_extra_body
@@ -255,100 +294,113 @@ class OpenAICompatBackend(LLMBackend):
                 kwargs.pop("extra_body", None)
 
             backoff = self._initial_backoff
-            # Once we detect that a thinking model consumed all tokens with reasoning
-            # but produced no structured output, we drop response_format and retry
-            # with prompt-only JSON guidance.  This flag ensures we only do it once.
             _schema_dropped = False
 
-            for attempt in range(_MAX_RETRIES + 1):
-                try:
-                    response = self._client.chat.completions.create(**kwargs)
+            try:
+                response = self._client.chat.completions.create(**kwargs)
 
-                    message = response.choices[0].message if response.choices else None
-                    content = message.content if message else None
+                message = response.choices[0].message if response.choices else None
+                content = message.content if message else None
 
-                    # Some OpenRouter models satisfy json_schema constraints via a
-                    # tool-call under the hood, leaving content=None and putting the
-                    # JSON in tool_calls[0].function.arguments.
-                    if not content and message is not None:
-                        tool_calls = getattr(message, "tool_calls", None)
-                        if tool_calls:
-                            content = tool_calls[0].function.arguments
+                # Some OpenRouter models satisfy json_schema constraints via a
+                # tool-call under the hood, leaving content=None and putting the
+                # JSON in tool_calls[0].function.arguments.
+                if not content and message is not None:
+                    tool_calls = getattr(message, "tool_calls", None)
+                    if tool_calls:
+                        content = tool_calls[0].function.arguments
 
-                    if not content:
-                        # Build a diagnostic hint to help identify why the response was empty.
-                        # Reasoning models (e.g. Nemotron, DeepSeek-R1) spend tokens on
-                        # chain-of-thought that is counted in usage but not returned as content.
-                        hints: list[str] = []
-                        _reasoning_detected = False
-                        if message is not None:
-                            if getattr(message, "refusal", None):
-                                hints.append("model refused")
-                            reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
-                            if reasoning:
-                                _reasoning_detected = True
-                                hints.append("model produced reasoning tokens but no output — try a non-reasoning model")
-                        usage = getattr(response, "usage", None)
-                        if usage:
-                            completion_tokens = getattr(usage, "completion_tokens", None)
-                            if completion_tokens:
-                                hints.append(f"{completion_tokens} completion tokens counted but content empty")
-                        hint_str = f" ({'; '.join(hints)})" if hints else ""
-                        exc = LLMBackendError(
-                            f"[{self.label}] Empty response from {model}{hint_str}"
-                        )
-                        # Thinking model + json_schema: drop the schema constraint and
-                        # retry immediately so the model can emit JSON in its text output.
-                        # _parse_json_array handles preamble/fence-wrapped output.
-                        if _reasoning_detected and not _schema_dropped and "response_format" in kwargs:
-                            kwargs.pop("response_format")
-                            _schema_dropped = True
-                            print(f"  [{tag}] Thinking model produced no structured output on {model} "
-                                  f"(attempt {attempt + 1}/{_MAX_RETRIES + 1}), retrying without schema constraint...")
-                            self._retry_count += 1
-                            continue
-                        raise exc
-                    return content
-
-                except Exception as exc:
-                    last_exc = exc
-
-                    is_rate_limit = (
-                        "429" in str(exc)
-                        or "rate limit" in str(exc).lower()
-                        or "rate_limit" in str(exc).lower()
+                if not content:
+                    # Build a diagnostic hint to help identify why the response was empty.
+                    hints: list[str] = []
+                    _reasoning_detected = False
+                    if message is not None:
+                        if getattr(message, "refusal", None):
+                            hints.append("model refused")
+                        reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+                        if reasoning:
+                            _reasoning_detected = True
+                            hints.append("model produced reasoning tokens but no output — try a non-reasoning model")
+                    usage = getattr(response, "usage", None)
+                    if usage:
+                        completion_tokens = getattr(usage, "completion_tokens", None)
+                        if completion_tokens:
+                            hints.append(f"{completion_tokens} completion tokens counted but content empty")
+                    hint_str = f" ({'; '.join(hints)})" if hints else ""
+                    exc = LLMBackendError(
+                        f"[{self.label}] Empty response from {model}{hint_str}"
                     )
-                    is_empty_response = "Empty response" in str(exc)
+                    # Thinking model + json_schema: drop the schema constraint and retry
+                    if _reasoning_detected and not _schema_dropped and "response_format" in kwargs:
+                        kwargs.pop("response_format")
+                        _schema_dropped = True
+                        print(f"  [{tag}] Thinking model produced no structured output on {model}, "
+                              f"retrying without schema constraint...")
+                        self._retry_count += 1
+                        continue
+                    raise exc
+                return content
 
-                    if not (is_rate_limit or is_empty_response) or attempt >= _MAX_RETRIES:
-                        break  # Stop retrying this model, try the next one
+            except Exception as exc:
+                last_exc = exc
 
-                    # Try to extract server-provided Retry-After from rate limit errors
-                    wait_time = backoff
-                    if is_rate_limit:
-                        server_delay = _extract_retry_after(str(exc))
-                        if server_delay is not None:
-                            wait_time = server_delay + 0.5  # Small buffer after server's suggested delay
-                        else:
-                            wait_time = min(backoff, _MAX_BACKOFF_SECONDS) + random.uniform(0, 2.0)
+                is_rate_limit = (
+                    "429" in str(exc)
+                    or "rate limit" in str(exc).lower()
+                    or "rate_limit" in str(exc).lower()
+                )
+                is_empty_response = "Empty response" in str(exc)
+                is_permanent_error = (
+                    "400" in str(exc)
+                    or "401" in str(exc)
+                    or "403" in str(exc)
+                    or "model_not_found" in str(exc).lower()
+                    or "not available" in str(exc).lower()
+                )
+
+                # Handle based on error type
+                if is_rate_limit:
+                    server_delay = _extract_retry_after(str(exc))
+                    if server_delay is None:
+                        server_delay = _INITIAL_BACKOFF_SECONDS
+                    server_delay += 0.5  # Small buffer
+
+                    if model == primary_model:
+                        # Primary hit rate limit — put it on cooldown
+                        primary_cooldown_until = time.time() + server_delay
+                        print(f"  [{tag}] {model} rate limited, back online in {round(server_delay)}s...")
+                        self._retry_count += 1
+                        # Fall through to model selection logic
+                        continue
                     else:
-                        # Empty response: use exponential backoff
-                        wait_time = min(backoff, _MAX_BACKOFF_SECONDS) + random.uniform(0, 2.0)
+                        # Fallback hit rate limit — rotate to next fallback, don't wait
+                        fallback_models.rotate(-1)
+                        print(f"  [{tag}] {model} rate limited, trying next fallback...")
+                        self._retry_count += 1
+                        continue
 
-                    reason = "Rate limited" if is_rate_limit else "Empty response"
-                    print(f"  [{tag}] {reason} on {model} (attempt {attempt + 1}/{_MAX_RETRIES + 1}), "
-                          f"retrying in {round(wait_time)}s...")
+                elif is_permanent_error:
+                    # Don't retry permanent errors
+                    permanently_failed.add(model)
+                    if model == primary_model:
+                        print(f"  [{tag}] {model} failed permanently (not retryable), trying fallbacks...")
+                    else:
+                        fallback_models.rotate(-1)
+                        print(f"  [{tag}] {model} failed permanently, trying next fallback...")
+                    # Continue to model selection logic
+                    continue
+
+                elif is_empty_response:
+                    # Retry with backoff
+                    wait_time = min(backoff, _MAX_BACKOFF_SECONDS) + random.uniform(0, 2.0)
+                    print(f"  [{tag}] Empty response from {model}, retrying in {round(wait_time)}s...")
                     self._retry_count += 1
                     time.sleep(wait_time)
                     backoff *= _BACKOFF_MULTIPLIER
+                    continue
 
-            # This model exhausted its retries — move to the next
-            if model_idx < len(models_to_try) - 1:
-                next_model = models_to_try[model_idx + 1]
-                self._fallback_hops += 1
-                print(f"  [{tag}] {model} failed, trying {next_model}...")
-
-        tried = ", ".join(models_to_try)
-        raise LLMBackendError(
-            f"[{self.label}] All models failed ({tried}). Last error: {last_exc}"
-        )
+                else:
+                    # Other error: mark as permanent and move on
+                    permanently_failed.add(model)
+                    print(f"  [{tag}] {model} failed: {exc}")
+                    continue
