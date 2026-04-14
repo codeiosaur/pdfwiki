@@ -54,6 +54,17 @@ from extract.fact_extractor import Fact
     # Reject: internal pipeline concept leakage
     ("Canonicalize Concept Names", False),
     ("Canonicalize Concept Name", False),
+
+    # Reject: Python/JSON reserved values
+    ("None", False),
+    ("True", False),
+    ("False", False),
+    ("Null", False),
+    ("NaN", False),
+    ("Infinity", False),
+    ("none", False),
+    ("true", False),
+    ("false", False),
 ])
 def test_is_valid_concept(concept, expected):
     assert is_valid_concept(concept) == expected

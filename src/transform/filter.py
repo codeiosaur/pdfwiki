@@ -80,6 +80,12 @@ _INTERNAL_CONCEPT_EXACT = {
     "existing facts",
 }
 
+# Python built-in/reserved values that should never be concept names
+_PYTHON_RESERVED_VALUES = {
+    "none", "true", "false", "null",  # JSON/Python literals
+    "nan", "inf", "infinity",  # Special numeric values
+}
+
 
 def is_valid_concept(name: str) -> bool:
     """
@@ -105,9 +111,13 @@ def is_valid_concept(name: str) -> bool:
     """
     if not name or not isinstance(name, str):
         return False
-    
+
     name = name.strip()
-    
+
+    # Rule 0: Reject Python reserved values (None, True, False, null, nan, etc.)
+    if name.lower() in _PYTHON_RESERVED_VALUES:
+        return False
+
     # Rule 1: Reject if contains year (1900-2099)
     if re.search(r'\b(19|20)\d{2}\b', name):
         return False
