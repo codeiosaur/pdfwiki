@@ -18,13 +18,14 @@ Usage:
     facts = assign_with(pass2, statements)
 """
 
-from backend.base import BackendConfig, LLMBackend, LLMBackendError
+from backend.base import BackendConfig, LLMBackend, LLMBackendError, RetryableError
 from backend.factory import create_backend, create_pass_backends
 
 __all__ = [
     "BackendConfig",
     "LLMBackend",
     "LLMBackendError",
+    "RetryableError",
     "create_backend",
     "create_pass_backends",
 ]
