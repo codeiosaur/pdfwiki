@@ -14,7 +14,7 @@ import random
 import re
 from typing import Optional
 
-from backend.base import BackendConfig, LLMBackend, LLMBackendError
+from backend.base import BackendConfig, LLMBackend, LLMBackendError, RetryableError
 
 try:
     from google import genai
@@ -216,7 +216,7 @@ class GeminiBackend(LLMBackend):
                         f"  [{self.label}{ctx}] {label} on {model} "
                         f"(attempt {attempt + 1}/{_MAX_RETRIES}), retrying in {sleep_time:.1f}s..."
                     )
-                    time.sleep(sleep_time)
+                    raise RetryableError(sleep_time, f"{label} on {model}")
                     backoff = min(backoff * _BACKOFF_MULTIPLIER, _MAX_BACKOFF_SECONDS)
 
         # All models exhausted
