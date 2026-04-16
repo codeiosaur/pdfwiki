@@ -143,3 +143,17 @@ class LLMBackend(ABC):
 class LLMBackendError(Exception):
     """Raised when an LLM backend call fails."""
     pass
+
+
+class RetryableError(Exception):
+    """
+    Raised when a batch should be retried after a delay (e.g., rate limit).
+
+    This allows the worker thread to return immediately instead of blocking,
+    letting the batch queue handle the retry scheduling. Used by BackendPool.dispatch()
+    to implement non-blocking retry logic.
+    """
+    def __init__(self, delay_seconds: float, message: str = ""):
+        self.delay_seconds = delay_seconds
+        self.message = message
+        super().__init__(f"Retry after {delay_seconds}s: {message}" if message else f"Retry after {delay_seconds}s")

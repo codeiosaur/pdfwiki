@@ -19,10 +19,11 @@ Usage:
 
 import itertools
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, List, Optional, TypeVar
+from typing import Callable, List, Optional, Tuple, TypeVar
 
-from backend.base import LLMBackend, BackendConfig
+from backend.base import LLMBackend, BackendConfig, RetryableError
 
 _T = TypeVar("_T")
 
@@ -196,35 +197,58 @@ class BackendPool(LLMBackend):
 
         from collections import deque
 
-        # Shared state: queue of items, results list, locks
+        # Shared state: queue of items, retry queue, results list, locks
         item_queue: deque = deque(items)
+        retry_queue: List[Tuple[List, float]] = []  # (batch, retry_until_time)
         queue_lock = threading.Lock()
         results: List = []
         results_lock = threading.Lock()
 
         def _worker(backend: LLMBackend, backend_idx: int) -> None:
             """
-            Worker loop: pull batch from queue, process, repeat until queue empty.
+            Worker loop: pull batch from queue or retry_queue, process, repeat.
+            If RetryableError is raised, re-queue with a delay instead of blocking.
             No per-backend semaphore; ThreadPoolExecutor enforces total concurrency.
             """
             bs = backend.preferred_batch_size or default_batch_size
             while True:
-                # Pull a batch from the queue (brief lock, then released)
+                batch = None
+                # Try to find a batch: either from retry_queue (if ready) or item_queue
                 with queue_lock:
-                    if not item_queue:
-                        return  # queue empty, worker exits
-                    # Pull up to batch_size items from the queue
-                    batch = [item_queue.popleft() for _ in range(min(bs, len(item_queue)))]
-                    if not batch:
+                    now = time.time()
+                    # Check if any retryable items are ready
+                    ready_retries = [i for i, (_, retry_time) in enumerate(retry_queue) if retry_time <= now]
+                    if ready_retries:
+                        # Take first ready retry
+                        batch, _ = retry_queue.pop(ready_retries[0])
+                    elif item_queue:
+                        # Pull up to batch_size items from the main queue
+                        batch = [item_queue.popleft() for _ in range(min(bs, len(item_queue)))]
+                        if not batch:
+                            return
+
+                    # If no batch ready and nothing in queues, exit
+                    if batch is None and not item_queue and not retry_queue:
                         return
 
-                # Process the batch without holding locks (true work-stealing)
-                self._thread_local.last_backend_label = backend.label
-                result = process_fn(batch, backend, bs)
+                # If no batch found but there are retries pending, sleep briefly and retry
+                if batch is None:
+                    time.sleep(0.1)
+                    continue
 
-                # Append results (thread-safe)
-                with results_lock:
-                    results.extend(result)
+                # Process the batch without holding locks (true work-stealing)
+                try:
+                    self._thread_local.last_backend_label = backend.label
+                    result = process_fn(batch, backend, bs)
+
+                    # Append results (thread-safe)
+                    with results_lock:
+                        results.extend(result)
+                except RetryableError as e:
+                    # Re-queue batch with retry delay instead of blocking
+                    retry_time = time.time() + e.delay_seconds
+                    with queue_lock:
+                        retry_queue.append((batch, retry_time))
 
         # Spawn workers: each backend gets N worker threads (no per-backend concurrency limit).
         # ThreadPoolExecutor enforces max_workers = sum of all backend workers.
