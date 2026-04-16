@@ -104,6 +104,16 @@ All config via environment variables (or `.env` file). See `.env.example` for fu
 - `TWO_PASS=1` — Enable two-pass extraction (recommended)
 - `ENHANCED_PAGE_MODE=1` — Use wiki-style renderer
 
+## Post-Processing & Recovery
+
+**Re-synthesis mode:** When a run completes but synthesis fails for some concepts (timeouts, rate limits), or pages lack synthesis for other reasons (incomplete prior runs), use `--resynthesize` to fix them retroactively without re-running the entire pipeline:
+
+```bash
+python3 src/main.py --resynthesize ./output/vault-combined
+```
+
+This scans the vault directory for `.md` files **without** `generated_by_backend:` frontmatter, extracts facts from their content, and re-runs synthesis on those concepts only. Existing synthesized pages are left untouched.
+
 ## Tuning
 
 - **Batch sizes:** `extract_raw_statements_batched()` defaults to `batch_size=4` (chunks per LLM call); `assign_concepts_to_statements()` defaults to `batch_size=16` (statements per call). Pass a different value at the call site — no env var needed. Smaller batches help models with tight context windows; larger batches reduce round-trips.
