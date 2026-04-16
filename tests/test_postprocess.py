@@ -3,7 +3,11 @@
 from unittest.mock import MagicMock
 
 from extract.fact_extractor import Fact
-from postprocess import enrich_thin_concepts
+from postprocess import (
+    enrich_thin_concepts,
+    evaluate_concepts,
+    generate_redirect_pages,
+)
 
 
 def _make_grouped(thin_count: int = 3, fat_count: int = 2) -> dict[str, list[Fact]]:
@@ -86,3 +90,87 @@ def test_enrich_backend_failure_skips_concept() -> None:
     assert set(result.keys()) == set(grouped.keys())
     for concept in grouped:
         assert len(result[concept]) == len(grouped[concept])
+
+
+def _fact(concept: str, n: int = 1) -> list[Fact]:
+    return [
+        Fact(id=f"{concept}-{i}", concept=concept,
+             content=f"Fact {i}.", source_chunk_id="chunk-1")
+        for i in range(n)
+    ]
+
+
+class TestNearDuplicatesAndRedirects:
+    """Regression tests for the accounting-vault merge bugs.
+
+    These specific pairs were incorrectly redirected in the April 2026 run:
+    Accounts Payable → Accounts Receivable, Fixed Cost → Fixed Asset,
+    Direct Material → Direct Labor, Activity Base → Activity Rate,
+    Indirect Materials Expense → Direct Material.
+    """
+
+    def test_cousin_pairs_not_flagged_as_near_duplicates(self) -> None:
+        grouped = {
+            "Accounts Payable": _fact("Accounts Payable", 2),
+            "Accounts Receivable": _fact("Accounts Receivable", 5),
+            "Fixed Cost": _fact("Fixed Cost", 2),
+            "Fixed Asset": _fact("Fixed Asset", 5),
+            "Direct Material": _fact("Direct Material", 2),
+            "Direct Labor": _fact("Direct Labor", 5),
+            "Activity Base": _fact("Activity Base", 2),
+            "Activity Rate": _fact("Activity Rate", 5),
+        }
+        result = evaluate_concepts(grouped)
+        pairs = {frozenset(p) for p in result["near_duplicates"]}
+        assert frozenset({"Accounts Payable", "Accounts Receivable"}) not in pairs
+        assert frozenset({"Fixed Cost", "Fixed Asset"}) not in pairs
+        assert frozenset({"Direct Material", "Direct Labor"}) not in pairs
+        assert frozenset({"Activity Base", "Activity Rate"}) not in pairs
+
+    def test_substring_match_uses_token_boundaries(self) -> None:
+        # "direct material" is a string-substring of "indirect materials
+        # expense", but NOT a token-level subsequence — the prefix of
+        # "indirect" bleeds into "direct".  Must not be flagged.
+        grouped = {
+            "Direct Material": _fact("Direct Material", 5),
+            "Indirect Materials Expense": _fact("Indirect Materials Expense", 2),
+        }
+        result = evaluate_concepts(grouped)
+        pairs = {frozenset(p) for p in result["near_duplicates"]}
+        assert frozenset({"Direct Material", "Indirect Materials Expense"}) not in pairs
+
+    def test_generate_redirect_pages_rejects_cousins(self) -> None:
+        # Even if a caller somehow passes a cousin pair through as a
+        # near-duplicate, the redirect generator must refuse to emit a stub.
+        grouped = {
+            "Fixed Cost": _fact("Fixed Cost", 2),
+            "Fixed Asset": _fact("Fixed Asset", 5),
+        }
+        redirects = generate_redirect_pages([("Fixed Cost", "Fixed Asset")], grouped)
+        assert redirects == {}
+
+    def test_generate_redirect_pages_rejects_antonyms(self) -> None:
+        grouped = {
+            "Accounts Payable": _fact("Accounts Payable", 2),
+            "Accounts Receivable": _fact("Accounts Receivable", 5),
+        }
+        redirects = generate_redirect_pages(
+            [("Accounts Payable", "Accounts Receivable")], grouped
+        )
+        assert redirects == {}
+
+    def test_generate_redirect_stub_has_backend_attribution(self) -> None:
+        # Substring-style near-duplicates still produce redirects — those
+        # redirects must carry the `generated_by_backend: redirect` marker so
+        # the QA tool doesn't bucket them as "unknown".
+        grouped = {
+            "Inventory Turnover": _fact("Inventory Turnover", 5),
+            "Inventory Turnover Concept": _fact("Inventory Turnover Concept", 2),
+        }
+        redirects = generate_redirect_pages(
+            [("Inventory Turnover", "Inventory Turnover Concept")], grouped
+        )
+        assert redirects, "expected a redirect stub for legit near-duplicate"
+        page = next(iter(redirects.values()))
+        assert "generated_by_backend: redirect" in page
+        assert "generated_by_model: none" in page

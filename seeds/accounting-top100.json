@@ -1,0 +1,194 @@
+{
+  "concepts": [
+    "Accounting",
+    "Accounting Equation",
+    "Assets",
+    "Liabilities",
+    "Stockholders' Equity",
+    "Revenue",
+    "Expenses",
+    "Transaction",
+    "Account",
+    "Chart of Accounts",
+    "Debit",
+    "Credit",
+    "Rules of Debit and Credit",
+    "Normal Balance",
+    "Double-Entry Accounting",
+    "Journal",
+    "Journal Entry",
+    "Ledger",
+    "Posting",
+    "Trial Balance",
+    "Accounting Cycle",
+    "Net Income",
+    "Closing Entries",
+    "Temporary Accounts",
+    "Cash Basis of Accounting",
+    "Accrual Basis of Accounting",
+    "Matching Principle",
+    "Adjusting Entries",
+    "Deferrals",
+    "Accruals",
+    "Prepaid Expenses",
+    "Unearned Revenue",
+    "Accrued Expenses",
+    "Accrued Revenue",
+    "Generally Accepted Accounting Principles",
+    "Income Statement",
+    "Balance Sheet",
+    "Retained Earnings Statement",
+    "Statement of Cash Flows",
+    "Cash",
+    "Accounts Receivable",
+    "Accounts Payable",
+    "Notes Receivable",
+    "Notes Payable",
+    "Inventory",
+    "Common Stock",
+    "Retained Earnings",
+    "Dividends",
+    "Merchandising Business",
+    "Cost of Goods Sold",
+    "Gross Profit",
+    "Perpetual Inventory System",
+    "Periodic Inventory System",
+    "Sales Discount",
+    "Sales Returns and Allowances",
+    "First-In First-Out Method",
+    "Last-In First-Out Method",
+    "Weighted Average Cost Method",
+    "Lower-of-Cost-or-Market",
+    "Bank Reconciliation",
+    "Uncollectible Accounts",
+    "Allowance Method",
+    "Direct Write-Off Method",
+    "Fixed Assets",
+    "Intangible Assets",
+    "Depreciation",
+    "Depreciation Expense",
+    "Straight-Line Depreciation",
+    "Units of Production Depreciation",
+    "Accumulated Depreciation",
+    "Book Value",
+    "Residual Value",
+    "Useful Life",
+    "Amortization",
+    "Bonds Payable",
+    "Payroll",
+    "Corporation",
+    "Preferred Stock",
+    "Par Value",
+    "Treasury Stock",
+    "Cash Dividend",
+    "Stock Dividend",
+    "Stock Split",
+    "Operating Activities",
+    "Investing Activities",
+    "Financing Activities",
+    "Horizontal Analysis",
+    "Vertical Analysis",
+    "Current Ratio",
+    "Quick Ratio",
+    "Return on Equity",
+    "Earnings Per Share",
+    "Managerial Accounting",
+    "Product Cost",
+    "Period Cost",
+    "Direct Materials",
+    "Direct Labor",
+    "Factory Overhead",
+    "Contribution Margin",
+    "Breakeven Point"
+  ],
+  "antonyms": [
+    [
+      "periodic",
+      "perpetual"
+    ],
+    [
+      "current",
+      "noncurrent"
+    ],
+    [
+      "revenue",
+      "expense"
+    ],
+    [
+      "asset",
+      "liability"
+    ],
+    [
+      "debit",
+      "credit"
+    ],
+    [
+      "fraud",
+      "valuation"
+    ],
+    [
+      "fraud",
+      "shrinkage"
+    ],
+    [
+      "fraud",
+      "obsolescence"
+    ],
+    [
+      "fraud",
+      "management"
+    ],
+    [
+      "fraud",
+      "error"
+    ],
+    [
+      "shrinkage",
+      "obsolescence"
+    ],
+    [
+      "shipping",
+      "destination"
+    ],
+    [
+      "payable",
+      "receivable"
+    ],
+    [
+      "variable",
+      "absorption"
+    ],
+    [
+      "material",
+      "labor"
+    ],
+    [
+      "material",
+      "overhead"
+    ],
+    [
+      "labor",
+      "overhead"
+    ],
+    [
+      "cash",
+      "accrual"
+    ],
+    [
+      "operating",
+      "investing"
+    ],
+    [
+      "operating",
+      "financing"
+    ],
+    [
+      "investing",
+      "financing"
+    ],
+    [
+      "static",
+      "flexible"
+    ]
+  ]
+}

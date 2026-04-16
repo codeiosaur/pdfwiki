@@ -153,6 +153,25 @@ def _ensure_title_heading(body: str, display_title: str) -> str:
     return body
 
 
+def _mark_fallback(page: str, reason: str) -> str:
+    """Stamp a fallback page's frontmatter with `generated_by_backend: fallback-<reason>`.
+
+    Pass 3 attribution is normally added in the success path.  When synthesis
+    fails and we return the pre-rendered wiki page, this helper records why so
+    downstream QA tools can bucket fallbacks separately rather than lumping
+    them into an "unknown" backend.
+    """
+    if not page:
+        return page
+    fm = _extract_frontmatter(page)
+    if fm and "generated_by_backend:" in fm:
+        return page
+    body = page[len(fm):] if fm else page
+    new_fm = _add_backend_attribution(fm, f"fallback-{reason}", "none")
+    separator = "" if body.startswith("\n") else "\n"
+    return new_fm + separator + body
+
+
 # ---------------------------------------------------------------------------
 # Core renderer
 # ---------------------------------------------------------------------------
@@ -205,7 +224,7 @@ def synthesize_pages(
         facts = grouped[concept]
         fact_contents = list(unique_fact_contents(facts))[:_MAX_SYNTHESIS_FACTS]
         if not fact_contents:
-            return display_title, fallback
+            return display_title, _mark_fallback(fallback, "no-facts")
 
         related = build_related_concepts_by_chunks(
             concept, concept_chunks, concept_names, max_related=5, grouped=grouped
@@ -219,11 +238,11 @@ def synthesize_pages(
                                          system_prompt=_SYNTHESIS_SYSTEM_PROMPT)
         except Exception as exc:
             logging.warning("Synthesis failed for '%s': %s", concept, exc)
-            return display_title, fallback
+            return display_title, _mark_fallback(fallback, "exception")
 
         if not raw or not raw.strip():
             logging.warning("Synthesis returned empty response for '%s'", concept)
-            return display_title, fallback
+            return display_title, _mark_fallback(fallback, "empty-response")
 
         body = raw.strip()
         body = _strip_thinking_tags(body)
@@ -231,7 +250,7 @@ def synthesize_pages(
         body = _strip_fact_labels(body)
         if not body:
             logging.warning("Synthesis response for '%s' was all thinking tokens, no content", concept)
-            return display_title, fallback
+            return display_title, _mark_fallback(fallback, "thinking-only")
         body = _strip_auto_sections(body)
         body = _ensure_title_heading(body, display_title)
         body = inject_wikilinks(body, all_display_titles, display_title)
@@ -268,7 +287,10 @@ def synthesize_pages(
                     logging.warning("Synthesis error for concept: %s", exc)
                     display_title = normalize_page_title(concept)
                     if wiki_pages.get(display_title):
-                        batch_results.append((display_title, wiki_pages[display_title]))
+                        batch_results.append((
+                            display_title,
+                            _mark_fallback(wiki_pages[display_title], "dispatch-error"),
+                        ))
             return batch_results
 
         # Use work-stealing dispatch: each concept is an item, workers pull dynamically
@@ -298,8 +320,9 @@ def synthesize_pages(
                     logging.warning("Synthesis error for '%s': %s", concept, exc)
                     display_title = normalize_page_title(concept)
                     if wiki_pages.get(display_title):
-                        results_list.append((display_title, wiki_pages[display_title]))
-                        results[display_title] = wiki_pages[display_title]
+                        marked = _mark_fallback(wiki_pages[display_title], "executor-error")
+                        results_list.append((display_title, marked))
+                        results[display_title] = marked
     else:
         # Sequential synthesis
         for concept in concept_names:

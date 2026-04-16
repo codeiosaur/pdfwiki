@@ -148,12 +148,21 @@ class TestSynthesizePages:
     def test_falls_back_to_wiki_page_on_empty_response(self, mock_backend):
         mock_backend.responses = [""]
         pages = synthesize_pages(self._grouped(), mock_backend, self._wiki_pages())
-        assert pages["Inventory Turnover"] == WIKI_PAGE
+        page = pages["Inventory Turnover"]
+        # Fallback page retains the wiki body but is stamped as a fallback so
+        # downstream QA tools can bucket it distinctly from synthesized pages.
+        assert "generated_by_backend: fallback-empty-response" in page
+        assert "generated_by_model: none" in page
+        assert "# Inventory Turnover" in page
+        assert "[[Cost of Goods Sold]]" in page
 
     def test_falls_back_to_wiki_page_on_backend_failure(self, mock_backend):
         mock_backend.should_fail = True
         pages = synthesize_pages(self._grouped(), mock_backend, self._wiki_pages())
-        assert pages["Inventory Turnover"] == WIKI_PAGE
+        page = pages["Inventory Turnover"]
+        assert "generated_by_backend: fallback-exception" in page
+        assert "# Inventory Turnover" in page
+        assert "[[Cost of Goods Sold]]" in page
 
     def test_strips_llm_added_related_concepts(self, mock_backend):
         mock_backend.responses = [

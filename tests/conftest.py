@@ -17,6 +17,24 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # ---------------------------------------------------------------------------
+# Register domain antonym pairs once per session so tests that exercise
+# domain-specific antonym logic (e.g. periodic/perpetual, debit/credit) work
+# without needing to spin up a full pipeline.  This mirrors what pipeline.py
+# does at startup when a seeds file is provided.
+# ---------------------------------------------------------------------------
+_SEEDS_FILE = Path(__file__).resolve().parent.parent / "seeds" / "accounting-top500.json"
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _register_accounting_antonyms():
+    from extract.fact_extractor import load_antonyms_from_file
+    from transform.matching import register_antonym_pairs
+    if _SEEDS_FILE.exists():
+        pairs = load_antonyms_from_file(str(_SEEDS_FILE))
+        if pairs:
+            register_antonym_pairs(pairs)
+
+# ---------------------------------------------------------------------------
 # LLM env-var prefixes that should never leak from the real shell or .env
 # file into tests. Any os.environ key that starts with one of these is
 # cleared at the start of every test.  Individual tests that need a specific

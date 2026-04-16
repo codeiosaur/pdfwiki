@@ -7,7 +7,7 @@ import uuid as _uuid
 from backend import LLMBackend
 from extract.fact_extractor import Fact, _parse_json_object, _parse_json_array
 from generate.titles import concept_tokens
-from transform.matching import has_antonym_conflict, is_sibling, tokenize_for_matching
+from transform.matching import has_antonym_conflict, is_cousin, is_sibling, tokenize_for_matching
 
 
 def apply_canonical_map(
@@ -227,20 +227,34 @@ def evaluate_concepts(grouped: dict[str, list]) -> dict:
 
         return False
 
+    def _is_contiguous_token_subsequence(shorter: list[str], longer: list[str]) -> bool:
+        """True if `shorter` appears as a contiguous run of tokens inside `longer`."""
+        if not shorter or len(shorter) > len(longer):
+            return False
+        for start in range(len(longer) - len(shorter) + 1):
+            if longer[start : start + len(shorter)] == shorter:
+                return True
+        return False
+
     for i, left in enumerate(concepts):
         for right in concepts[i + 1 :]:
             if has_antonym_conflict(left, right):
                 continue
             if is_sibling(left, right):
                 continue
+            if is_cousin(left, right):
+                continue
 
             left_words = tokenize_for_matching(left)
             right_words = tokenize_for_matching(right)
             shorter_words = left_words if len(left_words) <= len(right_words) else right_words
             longer_words = right_words if len(right_words) >= len(left_words) else left_words
+            # Token-level contiguous subsequence — prevents string-level false
+            # positives like "direct material" matching inside "indirect
+            # materials expense".
             is_substring_match = (
                 len(shorter_words) >= 2
-                and " ".join(shorter_words) in " ".join(longer_words)
+                and _is_contiguous_token_subsequence(shorter_words, longer_words)
             )
             if is_substring_match or differs_by_one_word(left, right):
                 near_duplicates.append((left, right))
@@ -328,11 +342,25 @@ def generate_redirect_pages(
 
     Returns a dict of {display_title: page_content} redirect stubs.
     Skips pairs where both concepts have the same fact count (ambiguous).
+
+    Applies the same antonym / sibling / cousin safety filters as
+    `evaluate_concepts` to prevent semantically-distinct pairs (e.g.
+    Accounts Payable vs Accounts Receivable, Fixed Cost vs Fixed Asset)
+    from being collapsed into a redirect.
     """
     from generate.titles import normalize_page_title
 
     redirects: dict[str, str] = {}
     for left, right in near_duplicates:
+        # Re-verify semantic safety — the near-duplicates list may have been
+        # computed by a caller with looser rules.
+        if has_antonym_conflict(left, right):
+            continue
+        if is_sibling(left, right):
+            continue
+        if is_cousin(left, right):
+            continue
+
         left_count = len(final_grouped.get(left, []))
         right_count = len(final_grouped.get(right, []))
 
@@ -351,8 +379,18 @@ def generate_redirect_pages(
         source_title = normalize_page_title(source)
         target_title = normalize_page_title(target)
 
-        # Obsidian-compatible redirect stub
-        page = f"# {source_title}\n\n> This page redirects to [[{target_title}]].\n\n## Redirect\n[[{target_title}]]\n"
+        # Obsidian-compatible redirect stub with backend attribution so the
+        # quality tool buckets these under "redirect" rather than "unknown".
+        page = (
+            "---\n"
+            "generated_by_backend: redirect\n"
+            "generated_by_model: none\n"
+            "---\n\n"
+            f"# {source_title}\n\n"
+            f"> This page redirects to [[{target_title}]].\n\n"
+            "## Redirect\n"
+            f"[[{target_title}]]\n"
+        )
         redirects[source_title] = page
 
     return redirects

@@ -20,12 +20,12 @@ from extract.fact_extractor import (
     derive_seed_concepts,
     extract_facts_batched,
     extract_raw_statements_batched,
-    load_builtin_seeds,
+    load_antonyms_from_file,
     load_seeds_from_file,
 )
 from generate.titles import concept_tokens
 from ingest.pdf_loader import Chunk, load_pdf_chunks
-from transform.matching import is_sibling, has_antonym_conflict
+from transform.matching import is_sibling, has_antonym_conflict, register_antonym_pairs
 
 _INVALID_FILENAME_CHARS = str.maketrans({c: "" for c in r'\/:*?"<>|'})
 
@@ -170,6 +170,10 @@ def resolve_seed_concepts(
         try:
             seeds = load_seeds_from_file(seeds_file)
             print(f"Pass 1.5: Loaded {len(seeds)} seed concepts from {seeds_file}")
+            antonym_pairs = load_antonyms_from_file(seeds_file)
+            if antonym_pairs:
+                register_antonym_pairs(antonym_pairs)
+                print(f"Pass 1.5: Registered {len(antonym_pairs)} domain antonym pairs")
             return seeds
         except Exception as exc:
             print(f"Pass 1.5: Failed to load seeds file ({exc}), falling back to auto-generation")
@@ -184,12 +188,17 @@ def resolve_seed_concepts(
         print(f"Pass 1.5 complete: {len(seeds)} seed concepts derived ({time.time() - t0:.0f}s)")
         return seeds
 
-    builtin = load_builtin_seeds()
+    print("Pass 1.5: Retrying with smaller sample...")
+    seeds = derive_seed_concepts(statements, pass2_backend, target_count=20, sample_size=40)
+    if seeds:
+        print(f"Pass 1.5 complete (retry): {len(seeds)} seed concepts derived ({time.time() - t0:.0f}s)")
+        return seeds
+
     print(
-        f"Pass 1.5: Auto-generation failed, using built-in seed list "
-        f"({len(builtin)} concepts)"
+        "Pass 1.5: Seed derivation failed after retry — "
+        "continuing without seeds (concept names will be invented freely by Pass 2)"
     )
-    return builtin
+    return []
 
 
 def _anchor_facts_to_seeds(facts: List[Fact], seeds: List[str]) -> List[Fact]:

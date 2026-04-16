@@ -9,7 +9,6 @@ Legacy single-pass functions are kept for backward compatibility.
 """
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Optional, TYPE_CHECKING
 
 import json
@@ -30,20 +29,6 @@ class Fact:
 
 
 # ---------------------------------------------------------------------------
-# Built-in seed fallback — used only when auto-generation fails and no
-# --seeds file is provided.  Domain-specific data lives in seeds/*.json,
-# not in Python source.
-# ---------------------------------------------------------------------------
-_BUILTIN_SEEDS_FILE = Path(__file__).parent.parent.parent / "seeds" / "accounting.json"
-
-
-def load_builtin_seeds() -> List[str]:
-    """Load the built-in accounting seed list from seeds/accounting.json."""
-    try:
-        return load_seeds_from_file(str(_BUILTIN_SEEDS_FILE))
-    except Exception as exc:
-        print(f"  [seeds] Warning: could not load built-in seeds ({exc}); no fallback available")
-        return []
 
 
 # ---------------------------------------------------------------------------
@@ -51,15 +36,43 @@ def load_builtin_seeds() -> List[str]:
 # ---------------------------------------------------------------------------
 
 def load_seeds_from_file(path: str) -> List[str]:
-    """Load a seed concept list from a JSON file (array of strings)."""
+    """Load a seed concept list from a JSON file.
+
+    Accepts two formats:
+    - Flat array (legacy): ["Concept A", "Concept B", ...]
+    - Nested object:       {"concepts": [...], "antonyms": [[a, b], ...]}
+    """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    if not isinstance(data, list):
-        raise ValueError(f"Seeds file must be a JSON array, got {type(data).__name__}")
-    seeds = [s.strip() for s in data if isinstance(s, str) and s.strip()]
+    if isinstance(data, dict):
+        raw = data.get("concepts", [])
+    elif isinstance(data, list):
+        raw = data
+    else:
+        raise ValueError(f"Seeds file must be a JSON array or object, got {type(data).__name__}")
+    seeds = [s.strip() for s in raw if isinstance(s, str) and s.strip()]
     if not seeds:
-        raise ValueError("Seeds file contained no valid strings")
+        raise ValueError("Seeds file contained no valid concept strings")
     return seeds
+
+
+def load_antonyms_from_file(path: str) -> set[tuple[str, str]]:
+    """Load domain-specific antonym pairs from a seeds file.
+
+    Returns an empty set for flat-array seeds files (no antonyms key).
+    Each pair must be a two-element list of strings: [token_a, token_b].
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return set()
+    pairs: set[tuple[str, str]] = set()
+    for item in data.get("antonyms", []):
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            a, b = str(item[0]).strip().lower(), str(item[1]).strip().lower()
+            if a and b:
+                pairs.add((a, b))
+    return pairs
 
 
 def derive_seed_concepts(
@@ -363,7 +376,7 @@ def assign_concepts_to_statements(
     if not statements:
         return []
 
-    seeds = seed_concepts if seed_concepts is not None else load_builtin_seeds()
+    seeds = seed_concepts or []
     seed_block = "\n".join(f"  - {c}" for c in seeds)
 
     # Build the system message once — it contains the static instructions and

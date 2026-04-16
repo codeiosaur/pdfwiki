@@ -5,6 +5,7 @@ import pytest
 from transform.matching import (
     tokenize_for_matching,
     edit_distance_1,
+    is_cousin,
     is_duplicate,
     is_sibling,
     has_strong_overlap,
@@ -173,3 +174,56 @@ class TestHasAntonymConflict:
 
     def test_fraud_vs_shrinkage(self):
         assert has_antonym_conflict("Inventory Fraud", "Inventory Shrinkage") is True
+
+    def test_payable_vs_receivable(self):
+        assert has_antonym_conflict("Accounts Payable", "Accounts Receivable") is True
+
+    def test_direct_vs_indirect(self):
+        assert has_antonym_conflict("Direct Cost", "Indirect Cost") is True
+
+    def test_fixed_vs_variable(self):
+        assert has_antonym_conflict("Fixed Cost", "Variable Cost") is True
+
+    def test_favorable_vs_unfavorable(self):
+        assert has_antonym_conflict("Favorable Variance", "Unfavorable Variance") is True
+
+
+class TestIsCousin:
+    """Cousins share all modifier tokens but differ on the head word.
+
+    These look similar but are typically distinct concepts (parallel members
+    of a modifier-based family). They must never be auto-merged or redirected.
+    """
+
+    def test_fixed_cost_vs_fixed_asset(self):
+        # Regression: CVP term vs balance-sheet term — never redirect.
+        assert is_cousin("Fixed Cost", "Fixed Asset") is True
+
+    def test_accounts_payable_vs_receivable(self):
+        # Regression: opposite accounts — never redirect.
+        assert is_cousin("Accounts Payable", "Accounts Receivable") is True
+
+    def test_direct_material_vs_direct_labor(self):
+        # Regression: distinct cost inputs — never redirect.
+        assert is_cousin("Direct Material", "Direct Labor") is True
+
+    def test_activity_base_vs_activity_rate(self):
+        # Regression: denominator vs derived rate — never redirect.
+        assert is_cousin("Activity Base", "Activity Rate") is True
+
+    def test_same_head_word_not_cousin(self):
+        # Same head word = siblings, not cousins.
+        assert is_cousin("ECB Mode", "CBC Mode") is False
+
+    def test_different_length_not_cousin(self):
+        assert is_cousin("Gross Profit", "Gross Profit Percentage") is False
+
+    def test_single_token_not_cousin(self):
+        assert is_cousin("FIFO", "LIFO") is False
+
+    def test_different_modifiers_not_cousin(self):
+        # Both differ in modifier AND head — not cousins.
+        assert is_cousin("Public Key", "Private Lock") is False
+
+    def test_identical_not_cousin(self):
+        assert is_cousin("Fixed Cost", "Fixed Cost") is False

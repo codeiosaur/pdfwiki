@@ -3,6 +3,7 @@ from extract.fact_extractor import Fact
 from transform.matching import (
     has_antonym_conflict,
     has_strong_overlap,
+    is_cousin,
     is_duplicate,
     is_sibling,
     tokenize_for_matching,
@@ -103,6 +104,11 @@ def is_clusterable(a: str, b: str) -> bool:
     if is_sibling(a, b):
         return False
 
+    # Cousins share all modifiers but differ on the head — e.g., "Fixed Cost"
+    # vs "Fixed Asset". These are distinct concepts and must never merge.
+    if is_cousin(a, b):
+        return False
+
     head_a = find_head_word(a)
     head_b = find_head_word(b)
     if not head_a or head_a != head_b:
@@ -152,6 +158,8 @@ def _concepts_are_similar(left: str, right: str) -> bool:
     if is_duplicate(left, right):
         return True
     if is_sibling(left, right):
+        return False
+    if is_cousin(left, right):
         return False
 
     # Only merge via strong overlap if the shared tokens represent
