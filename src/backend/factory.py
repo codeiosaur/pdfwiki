@@ -360,7 +360,7 @@ def _build_backend_from_spec(spec: dict, name: str) -> LLMBackend:
     backend = _create_backend_from_config(config)
 
     fallback_models = spec.get("fallback_models", [])
-    if fallback_models and getattr(backend, "is_openrouter", False):
+    if fallback_models:
         backend.set_fallback_models(fallback_models)
         print(f"  [{name}] Fallback models: {fallback_models}")
 

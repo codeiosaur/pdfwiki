@@ -31,7 +31,7 @@
 #   wrap_array_schema — use with structured_output: true for providers that support object
 #                     schemas but reject array roots (e.g. Cerebras). The array is wrapped
 #                     in {"items": [...]} before sending; the parser unwraps automatically.
-#   fallback_models — OpenRouter only: models to try if primary is rate-limited
+#   fallback_models — models to try if primary is rate-limited
 #   zdr             — OpenRouter only: true to request Zero Data Retention per-request
 #
 # Provider notes:
@@ -51,8 +51,7 @@
 #                   Keep workers: 1 on full-book runs to avoid exhausting the daily quota.
 #
 #   Cerebras:       base_url: https://api.cerebras.ai/v1
-#                   structured_output + wrap_array_schema: for Pass 3 (text output, no schema).
-#                   Array-root json_schema not supported — do not use for Pass 1 or Pass 2.
+#                   [Insert here]
 
 
 # =============================================================================

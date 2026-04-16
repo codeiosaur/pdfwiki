@@ -15,7 +15,7 @@ import time
 import re
 from typing import Any, Optional
 
-from backend.base import BackendConfig, LLMBackend, LLMBackendError
+from backend.base import BackendConfig, LLMBackend, LLMBackendError, RetryableError
 
 try:
     import openai
@@ -253,9 +253,10 @@ class OpenAICompatBackend(LLMBackend):
         from collections import deque
 
         primary_model = self._config.model
-        fallback_models = deque(self._fallback_models if self._is_openrouter and self._fallback_models else [])
+        fallback_models = deque(self._fallback_models if self._fallback_models else [])
 
         primary_cooldown_until: Optional[float] = None
+        fallback_cooldowns: dict[str, float] = {}  # model -> cooldown_until_time
         permanently_failed: set[str] = set()
         last_exc: Optional[Exception] = None
 
@@ -265,21 +266,45 @@ class OpenAICompatBackend(LLMBackend):
         self._total_requests += 1
 
         while True:
-            # Determine which model to use (primary if available, else next fallback)
+            # Determine which model to use (primary if available, else next available fallback)
             if primary_model not in permanently_failed:
                 if primary_cooldown_until is None or time.time() >= primary_cooldown_until:
                     model = primary_model
                     primary_cooldown_until = None
-                elif fallback_models:
-                    model = fallback_models[0]
                 else:
-                    # Primary on cooldown, no fallbacks left — wait for primary to reset
-                    wait_until_reset = primary_cooldown_until - time.time()
-                    print(f"  [{tag}] All fallbacks exhausted, {primary_model} resumes in {round(wait_until_reset)}s...")
-                    time.sleep(wait_until_reset + 0.1)
-                    continue
+                    # Primary on cooldown, find next available fallback
+                    available_fallback = None
+                    for fb in fallback_models:
+                        if fb not in permanently_failed and (fb not in fallback_cooldowns or time.time() >= fallback_cooldowns[fb]):
+                            available_fallback = fb
+                            break
+
+                    if available_fallback:
+                        model = available_fallback
+                    else:
+                        # All fallbacks are on cooldown or permanently failed, raise for retry
+                        wait_until_reset = primary_cooldown_until - time.time()
+                        print(f"  [{tag}] All fallbacks on cooldown, {primary_model} resumes in {round(wait_until_reset)}s...")
+                        raise RetryableError(
+                            wait_until_reset + 0.1,
+                            f"All fallbacks on cooldown, waiting for {primary_model}"
+                        )
             elif fallback_models:
-                model = fallback_models[0]
+                # Primary permanently failed, find next available fallback
+                available_fallback = None
+                for fb in fallback_models:
+                    if fb not in permanently_failed and (fb not in fallback_cooldowns or time.time() >= fallback_cooldowns[fb]):
+                        available_fallback = fb
+                        break
+
+                if available_fallback:
+                    model = available_fallback
+                else:
+                    # All fallbacks unavailable, raise error
+                    tried = primary_model + (f", {', '.join(self._fallback_models)}" if self._fallback_models else "")
+                    raise LLMBackendError(
+                        f"[{self.label}] All models failed or on cooldown ({tried}). Last error: {last_exc}"
+                    )
             else:
                 # All models failed permanently, no fallbacks
                 tried = primary_model + (f", {', '.join(self._fallback_models)}" if self._fallback_models else "")
@@ -343,6 +368,13 @@ class OpenAICompatBackend(LLMBackend):
 
             except Exception as exc:
                 last_exc = exc
+                # Extract error code (429, 413, etc.) if present, otherwise use exception type
+                exc_str = str(exc)
+                error_code = None
+                if "Error code: " in exc_str:
+                    error_code = exc_str.split("Error code: ")[1].split(" ")[0]
+                error_label = error_code if error_code else type(exc).__name__
+                print(f"  [{tag}] ✗ {error_label} on {model}")
 
                 is_rate_limit = (
                     "429" in str(exc)
@@ -373,9 +405,9 @@ class OpenAICompatBackend(LLMBackend):
                         # Fall through to model selection logic
                         continue
                     else:
-                        # Fallback hit rate limit — rotate to next fallback, don't wait
-                        fallback_models.rotate(-1)
-                        print(f"  [{tag}] {model} rate limited, trying next fallback...")
+                        # Fallback hit rate limit — put it on cooldown, try next available fallback
+                        fallback_cooldowns[model] = time.time() + server_delay
+                        print(f"  [{tag}] {model} rate limited, back online in {round(server_delay)}s...")
                         self._retry_count += 1
                         continue
 
@@ -391,13 +423,11 @@ class OpenAICompatBackend(LLMBackend):
                     continue
 
                 elif is_empty_response:
-                    # Retry with backoff
+                    # Retry with backoff (non-blocking via RetryableError)
                     wait_time = min(backoff, _MAX_BACKOFF_SECONDS) + random.uniform(0, 2.0)
                     print(f"  [{tag}] Empty response from {model}, retrying in {round(wait_time)}s...")
                     self._retry_count += 1
-                    time.sleep(wait_time)
-                    backoff *= _BACKOFF_MULTIPLIER
-                    continue
+                    raise RetryableError(wait_time, f"Empty response from {model}")
 
                 else:
                     # Other error: mark as permanent and move on
