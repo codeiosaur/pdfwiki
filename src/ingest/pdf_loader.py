@@ -128,10 +128,10 @@ def load_pdf_chunks(
     max_chunk_words: int = 1200,
 ) -> List[Chunk]:
     try:
-        from pypdf import PdfReader
+        import pdfplumber
     except ImportError as exc:
         raise ImportError(
-            "The 'pypdf' package is required to load PDF files. Install it with: pip install pypdf"
+            "The 'pdfplumber' package is required to load PDF files. Install it with: pip install pdfplumber"
         ) from exc
 
     if min_chunk_words < 1:
@@ -139,10 +139,10 @@ def load_pdf_chunks(
     if max_chunk_words < min_chunk_words:
         max_chunk_words = min_chunk_words
 
-    reader = PdfReader(pdf_path)
     page_texts: List[str] = []
-    for page in reader.pages:
-        page_texts.append(page.extract_text() or "")
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            page_texts.append(page.extract_text() or "")
 
     full_text = "\n".join(page_texts)
     full_text = full_text.translate(_UNICODE_REPLACEMENTS)

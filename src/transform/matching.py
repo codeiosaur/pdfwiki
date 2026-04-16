@@ -1,22 +1,36 @@
 import re
 
-ANTONYM_TOKEN_PAIRS = {
+# Language-universal antonym pairs — apply across any domain.
+# Domain-specific pairs must be registered at pipeline startup via
+# register_antonym_pairs() so this module stays domain-agnostic.
+ANTONYM_TOKEN_PAIRS: set[tuple[str, str]] = {
     ("first", "last"),
-    ("periodic", "perpetual"),
     ("beginning", "ending"),
     ("gross", "net"),
-    ("current", "noncurrent"),
-    ("revenue", "expense"),
-    ("asset", "liability"),
-    ("debit", "credit"),
-    ("fraud", "valuation"),
-    ("fraud", "shrinkage"),
-    ("fraud", "obsolescence"),
-    ("fraud", "management"),
-    ("fraud", "error"),
-    ("shrinkage", "obsolescence"),
-    ("shipping", "destination"),
+    ("increase", "decrease"),
+    ("inflow", "outflow"),
+    ("short", "long"),
+    ("direct", "indirect"),
+    ("fixed", "variable"),
+    ("favorable", "unfavorable"),
+    ("continue", "discontinue"),
+    ("keep", "replace"),
+    ("make", "buy"),
+    ("lease", "sell"),
 }
+
+# Domain-specific pairs injected at pipeline startup.
+_extra_antonym_pairs: set[tuple[str, str]] = set()
+
+
+def register_antonym_pairs(pairs: set[tuple[str, str]]) -> None:
+    """Register domain-specific antonym pairs at pipeline startup.
+
+    Call once after loading the domain seeds file.  Idempotent — safe to
+    call multiple times with overlapping sets.
+    """
+    global _extra_antonym_pairs
+    _extra_antonym_pairs = _extra_antonym_pairs | pairs
 
 def tokenize_for_matching(name: str) -> list[str]:
     """
@@ -136,6 +150,33 @@ def is_sibling(a: str, b: str) -> bool:
     return left_tokens[:-1] != right_tokens[:-1]
 
 
+def is_cousin(a: str, b: str) -> bool:
+    """
+    True if concepts share all modifier tokens but differ on the head (last token).
+
+    These are parallel members of a modifier-based family and should NEVER be
+    merged or redirected — they are typically distinct concepts expressed with
+    a shared qualifier.
+
+    Examples:
+    - "Fixed Cost" vs "Fixed Asset" -> True (CVP term vs balance-sheet term)
+    - "Accounts Payable" vs "Accounts Receivable" -> True (opposite accounts)
+    - "Direct Labor" vs "Direct Material" -> True (distinct cost inputs)
+    - "Activity Base" vs "Activity Rate" -> True (denominator vs quotient)
+    """
+    left_tokens = tokenize_for_matching(a)
+    right_tokens = tokenize_for_matching(b)
+
+    if len(left_tokens) < 2 or len(right_tokens) < 2:
+        return False
+    if len(left_tokens) != len(right_tokens):
+        return False
+    if left_tokens[-1] == right_tokens[-1]:
+        return False
+
+    return left_tokens[:-1] == right_tokens[:-1]
+
+
 def has_strong_overlap(a: str, b: str) -> bool:
     """
     True if concepts share at least 2 tokens in order.
@@ -181,7 +222,7 @@ def has_antonym_conflict(a: str, b: str) -> bool:
     left_tokens = set(tokenize_for_matching(a))
     right_tokens = set(tokenize_for_matching(b))
 
-    for token_a, token_b in ANTONYM_TOKEN_PAIRS:
+    for token_a, token_b in ANTONYM_TOKEN_PAIRS | _extra_antonym_pairs:
         if (token_a in left_tokens and token_b in right_tokens) or (
             token_b in left_tokens and token_a in right_tokens
         ):
