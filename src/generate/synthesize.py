@@ -131,6 +131,11 @@ def _strip_fact_citations(body: str) -> str:
     return re.sub(r"\s*\(facts?\s[\d,\s]+\)", "", body)
 
 
+def _strip_fact_labels(body: str) -> str:
+    """Remove 'Fact <word>.:' labels emitted by enrichment that survive unsynthesized pages."""
+    return re.sub(r"\bFact\s+\w+\.:\s*", "", body)
+
+
 def _strip_auto_sections(body: str) -> str:
     """Remove any Related Concepts / See Also / Sources section the LLM added."""
     for header in ["## Related Concepts", "## See Also", "## Sources"]:
@@ -223,6 +228,7 @@ def synthesize_pages(
         body = raw.strip()
         body = _strip_thinking_tags(body)
         body = _strip_fact_citations(body)
+        body = _strip_fact_labels(body)
         if not body:
             logging.warning("Synthesis response for '%s' was all thinking tokens, no content", concept)
             return display_title, fallback

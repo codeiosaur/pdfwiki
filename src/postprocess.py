@@ -316,3 +316,43 @@ def check_evaluation_assertions(current: dict, previous: Optional[dict]) -> None
 
     for warning in warnings:
         print(f"WARNING: {warning}")
+
+
+def generate_redirect_pages(
+    near_duplicates: List[tuple[str, str]],
+    final_grouped: dict[str, List[Fact]],
+) -> dict[str, str]:
+    """
+    For near-duplicate pairs, generate a redirect stub for the concept
+    with fewer facts pointing to the concept with more facts.
+
+    Returns a dict of {display_title: page_content} redirect stubs.
+    Skips pairs where both concepts have the same fact count (ambiguous).
+    """
+    from generate.titles import normalize_page_title
+
+    redirects: dict[str, str] = {}
+    for left, right in near_duplicates:
+        left_count = len(final_grouped.get(left, []))
+        right_count = len(final_grouped.get(right, []))
+
+        # Skip if both have same fact count (ambiguous which is canonical)
+        if left_count == right_count:
+            continue
+
+        # Determine source (fewer facts) and target (more facts)
+        source = left if left_count < right_count else right
+        target = right if left_count < right_count else left
+
+        # Skip if source doesn't exist in final_grouped (already merged away)
+        if source not in final_grouped:
+            continue
+
+        source_title = normalize_page_title(source)
+        target_title = normalize_page_title(target)
+
+        # Obsidian-compatible redirect stub
+        page = f"# {source_title}\n\n> This page redirects to [[{target_title}]].\n\n## Redirect\n[[{target_title}]]\n"
+        redirects[source_title] = page
+
+    return redirects
