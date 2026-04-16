@@ -45,6 +45,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--resynthesize",
+        metavar="VAULT_DIR",
+        default=None,
+        help=(
+            "Path to an existing vault directory. Re-runs Pass 3 synthesis only on pages "
+            "that are missing the 'generated_by_backend:' frontmatter key. "
+            "Reads existing pages as the wiki_pages fallback; overwrites in place."
+        ),
+    )
+
     return parser
 
 

@@ -1,6 +1,8 @@
 from pathlib import Path
 import os
 import time
+import uuid
+import re
 
 from backend import create_backend, create_pass_backends
 from backend.factory import create_pass_backends_from_config, backends_config_path, warn_deprecated_env_vars
@@ -29,10 +31,120 @@ from transform.filter import (
 from transform.grouping import group_facts_by_concept
 from transform.merge import merge_similar_concepts
 from transform.normalize import normalize_group_keys
+from extract.fact_extractor import Fact
+
+
+def _resynthesize_vault(vault_dir: str) -> None:
+    """
+    Re-run Pass 3 synthesis on pages in vault_dir that lack 'generated_by_backend:' frontmatter.
+
+    These are typically enriched-only pages that never made it through synthesis,
+    or pages from a prior partial run in the same directory.
+    """
+    _load_dotenv()
+
+    vault_path = Path(vault_dir)
+    if not vault_path.is_dir():
+        print(f"Error: Vault directory not found: {vault_dir}")
+        return
+
+    # Find synthesis backend
+    json_path = backends_config_path()
+    if json_path:
+        _, _, pass3_backend = create_pass_backends_from_config(json_path)
+    else:
+        pass3_backend = create_backend(provider="openai_compat", label="local")
+
+    synthesis_workers = int(os.getenv("PIPELINE_SYNTHESIS_WORKERS", "1"))
+
+    # Scan vault for unsynthesized pages
+    unsynthesized_pages = {}
+    markdown_files = sorted(vault_path.glob("*.md"))
+
+    for md_file in markdown_files:
+        content = md_file.read_text(encoding="utf-8")
+        # Check if page was already synthesized
+        if "generated_by_backend:" in content:
+            continue
+
+        # Parse title from filename (reverse the safe-name encoding)
+        title = md_file.stem  # e.g., "Accounts Payable"
+        unsynthesized_pages[title] = content
+
+    if not unsynthesized_pages:
+        print(f"No unsynthesized pages found in {vault_dir}")
+        return
+
+    print(f"Found {len(unsynthesized_pages)} unsynthesized pages. Starting synthesis...")
+
+    # Extract pseudo-facts from enriched pages to reconstruct grouped dict
+    grouped = {}
+    for title, content in unsynthesized_pages.items():
+        # Extract the body (after frontmatter and before Related Concepts)
+        body_start = content.find("\n---\n")
+        if body_start == -1:
+            body_start = 0
+        else:
+            body_start += 4
+
+        body_end = content.find("## Related Concepts")
+        if body_end == -1:
+            body_end = content.find("## See Also")
+        if body_end == -1:
+            body_end = len(content)
+
+        body = content[body_start:body_end].strip()
+
+        # Extract bullet points and paragraphs as fact-like content
+        # Strip "Fact N.:" labels that may have leaked through
+        fact_pattern = re.compile(r"\bFact\s+\w+\.:\s*(.+?)(?=\n|$)", re.MULTILINE)
+        facts_from_labels = fact_pattern.findall(body)
+
+        # Also extract bullet points
+        bullet_pattern = re.compile(r"^\s*[-•*]\s+(.+?)$", re.MULTILINE)
+        bullets = bullet_pattern.findall(body)
+
+        # Also grab the intro paragraph (first non-heading paragraph)
+        intro_lines = []
+        for line in body.split("\n"):
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and not stripped.startswith("-") and not stripped.startswith("•"):
+                intro_lines.append(stripped)
+                if len(intro_lines) >= 2:  # Take first 2 sentences roughly
+                    break
+
+        # Combine all extracted content as fact strings
+        fact_contents = facts_from_labels + bullets + intro_lines
+        fact_contents = [f.strip() for f in fact_contents if f.strip()]
+
+        # Create pseudo-Fact objects
+        # Fact dataclass requires: id (UUID), concept, content, source_chunk_id
+        grouped[title] = [
+            Fact(id=str(uuid.uuid4()), concept=title, content=fact_str, source_chunk_id="")
+            for fact_str in fact_contents
+        ]
+
+    # Run synthesis on the grouped concepts
+    pages_streaming = synthesize_pages(
+        grouped=grouped,
+        backend=pass3_backend,
+        wiki_pages=unsynthesized_pages,
+        workers=synthesis_workers,
+        streaming=True,
+    )
+
+    # Write results back to vault (overwriting in place)
+    write_vault(pages_streaming, vault_path)
+    print(f"Resynthesis complete. {len(unsynthesized_pages)} pages updated in {vault_dir}")
 
 
 def run_application(args) -> None:
     _load_dotenv()   # must run before any os.getenv() call
+
+    # Handle --resynthesize mode (re-run Pass 3 only on unsynthesized pages)
+    if args.resynthesize:
+        return _resynthesize_vault(args.resynthesize)
+
     demo_pdf_path = args.input or "./sample_accounting_openstax.pdf"
     output_path = Path(args.output)
     batch_size = int(os.getenv("PIPELINE_BATCH_SIZE", "4"))
@@ -144,6 +256,8 @@ def run_application(args) -> None:
         _t = time.perf_counter()
         final_grouped = consolidate_concepts_llm(final_grouped, backend=canonicalize_backend)
         print(f"Consolidation complete ({time.perf_counter() - _t:.0f}s)")
+        # Second dedup pass: LLM consolidation can rename concepts in ways that re-introduce near-duplicates
+        final_grouped = merge_similar_concepts(final_grouped)
 
     enrich_threshold = int(os.getenv("PIPELINE_ENRICH_THRESHOLD", "6"))
 
@@ -284,6 +398,15 @@ def run_application(args) -> None:
     for k, v in eval_result.items():
         print(k, ":", v)
     print(f"total_pipeline_time : {time.time() - pipeline_start:.0f}s")
+
+    # Generate redirect stubs for near-duplicate pairs
+    from postprocess import generate_redirect_pages
+    near_dups = eval_result.get("near_duplicates", [])
+    if near_dups:
+        redirect_pages = generate_redirect_pages(near_dups, final_grouped)
+        if redirect_pages:
+            print(f"\n[dedup] Writing {len(redirect_pages)} redirect stubs for near-duplicate concepts...")
+            write_vault(redirect_pages, output_path)
 
     previous_eval = load_previous_evaluation()
     check_evaluation_assertions(eval_result, previous_eval)

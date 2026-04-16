@@ -515,7 +515,7 @@ def generate_pages_wiki(
     def _render_one(concept: str) -> tuple[str, str] | None:
         facts = grouped[concept]
         display_title = normalize_page_title(concept)
-        fact_contents = [item for item in unique_fact_contents(facts) if not is_question_prompt(item)]
+        fact_contents = [re.sub(r"\bFact\s+\w+\.:\s*", "", item) for item in unique_fact_contents(facts) if not is_question_prompt(item)]
         concept_type = classify_concept_type(concept, fact_contents)
 
         # --- Select definition ---
