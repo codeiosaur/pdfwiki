@@ -48,6 +48,6 @@ For each decision:
 General rules:
 - Be concise but complete
 - Do NOT repeat the same information across files unless necessary
-- Assume the next session has ZERO prior context
+- Assume the next session has ZERO prior context, but that they will be told to read CLAUDE.md and these files by the end of the first message
 - Prefer clarity over cleverness
 - Use bullet points and structured formatting

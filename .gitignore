@@ -20,6 +20,11 @@ __pycache__/
 .vscode
 .continue
 
+# AI state-specific files
+HANDOVER.md
+STATE_SNAPSHOT.md
+DECISIONS.md
+
 # Output files
 output*/
 vault/
