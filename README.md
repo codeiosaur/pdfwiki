@@ -2,7 +2,7 @@
 
 Turn any academic PDF into a set of interlinked Obsidian study notes — automatically.
 
-Feed it a textbook chapter, or your course notes, and it produces wiki-style concept pages with definitions, key points, formulas, wikilinks, and related concepts. Drop the output into your Obsidian vault and start studying.
+Feed it your course notes, and it produces wiki-style concept pages with definitions, key points, formulas, wikilinks, and related concepts. Drop the output into your Obsidian vault and start studying.
 
 ## Quick Start
 
