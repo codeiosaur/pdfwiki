@@ -2,7 +2,7 @@
 
 ## Overview
 
-PDF-to-Wiki is a pipeline that converts PDF documents (textbooks, notes, slides) into interlinked Obsidian wiki pages. It uses a two-pass LLM extraction approach with a pluggable backend that supports local models (Ollama), cloud APIs (OpenRouter, Anthropic), and hybrid configurations.
+PDF-to-Wiki is a pipeline that converts PDF documents (notess, notes, slides) into interlinked Obsidian wiki pages. It uses a two-pass LLM extraction approach with a pluggable backend that supports local models (Ollama), cloud APIs (OpenRouter, Anthropic), and hybrid configurations.
 
 ## Pipeline Flow
 

@@ -51,7 +51,7 @@ def enrich_thin_concepts(
         facts = grouped[concept]
         need = min_facts - len(facts) + 1
         existing_block = "\n".join(f"- {f.content}" for f in facts)
-        prompt = f"""The following facts about "{concept}" were extracted from a textbook.
+        prompt = f"""The following facts about "{concept}" were extracted from a notes.
 Expand on them by writing {need} additional factual statements.
 
 Existing facts:
@@ -120,7 +120,7 @@ def consolidate_concepts_llm(
 
     concept_list = "\n".join(f"  - {c}" for c in concept_names)
 
-    prompt = f"""These are concept names extracted from a textbook chapter.
+    prompt = f"""These are concept names extracted from a notes chapter.
 Some may refer to the same concept under different names.
 
 Concept list:

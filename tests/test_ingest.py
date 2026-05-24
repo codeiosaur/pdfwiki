@@ -105,18 +105,18 @@ class TestHeadingRichText:
 
     def test_heading_rich_text_produces_at_least_one_chunk(self):
         text = self._heading_rich()
-        chunks, _ = _chunk_text(text, "textbook.pdf", min_chunk_words=800, max_chunk_words=1200)
+        chunks, _ = _chunk_text(text, "notes.pdf", min_chunk_words=800, max_chunk_words=1200)
         assert len(chunks) >= 1
 
     def test_heading_rich_chunks_under_max_size(self):
         text = self._heading_rich(n_headings=50, body_words=40)
-        chunks, _ = _chunk_text(text, "textbook.pdf", min_chunk_words=800, max_chunk_words=1200)
+        chunks, _ = _chunk_text(text, "notes.pdf", min_chunk_words=800, max_chunk_words=1200)
         for chunk in chunks:
             assert len(chunk.text.split()) <= 1200
 
     def test_all_words_accounted_for(self):
         text = self._heading_rich(n_headings=20, body_words=20)
-        chunks, _ = _chunk_text(text, "textbook.pdf", min_chunk_words=800, max_chunk_words=1200)
+        chunks, _ = _chunk_text(text, "notes.pdf", min_chunk_words=800, max_chunk_words=1200)
         total_chunk_words = sum(len(c.text.split()) for c in chunks)
         original_words = len(text.split())
         # Allow ±5% for sentence-boundary re-joining artefacts
@@ -124,7 +124,7 @@ class TestHeadingRichText:
 
     def test_each_chunk_has_unique_id(self):
         text = self._heading_rich()
-        chunks, _ = _chunk_text(text, "textbook.pdf")
+        chunks, _ = _chunk_text(text, "notes.pdf")
         ids = [c.id for c in chunks]
         assert len(ids) == len(set(ids))
 

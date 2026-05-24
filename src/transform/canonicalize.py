@@ -66,7 +66,7 @@ def normalize_concept_rules(concept: str) -> str:
     - Expand common abbreviations: FIFO, LIFO, LCM, COGS, AVG
     - Remove redundant trailing suffixes like Method/System/Approach when safe
     - Fix spacing/casing issues
-    - Normalize selected variants to canonical textbook forms
+    - Normalize selected variants to canonical notes forms
     """
     if not concept:
         return concept
@@ -139,7 +139,7 @@ def canonicalize_concepts(
     - Expand common abbreviations when appropriate:
         COGS -> Cost of Goods Sold
         LCM -> Lower of Cost or Market
-    - Normalize variants to one textbook name:
+    - Normalize variants to one notes name:
         FIFO, First In First Out Method -> First In First Out
     - Fix acronym casing errors:
         Epcs -> Electronic Product Code

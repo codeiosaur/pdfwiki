@@ -406,7 +406,7 @@ PREFERRED concept names (use one of these when the statement is about that topic
 Rules:
 - Use a preferred name from the list above whenever possible.
 - If no preferred name fits, create a SHORT noun phrase (1-4 words).
-- Use standard textbook terminology for new names.
+- Use standard notes terminology for new names.
 - Do NOT use vague names like "Overview", "Impact", "Method", "Management".
 - Every statement must get exactly one concept name.
 - If a statement fits multiple concepts from the list, assign it to the more specific one.
@@ -538,7 +538,7 @@ def extract_facts(
     Output ONLY valid JSON (no prose, no markdown).
     JSON format: [{{"concept":"...","content":"..."}}]
     Use short canonical concept names (1-4 words), noun phrases only.
-    Use standard textbook terms; prefer common names.
+    Use standard notes terms; prefer common names.
     Do not invent facts or concepts; skip unclear/underspecified items.
     Include all explicitly defined concepts, even if they appear minor.
     Use either acronym or full term (not both) for the same concept.
@@ -605,7 +605,7 @@ def extract_facts_batched(
 
         For each fact:
             - Assign a concept name that is SHORT and CANONICAL (1-4 words)
-            - Use standard textbook terminology
+            - Use standard notes terminology
             - Use noun-phrase style names (not sentence fragments)
             - Prefer commonly accepted names
             - DO NOT invent new concepts
