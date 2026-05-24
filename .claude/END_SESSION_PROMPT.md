@@ -1,4 +1,4 @@
-Give me a complete handover bundle for another Claude Code (Haiku) session.
+Give me a complete handover bundle for another coding agent session.
 
 Write the following three files in the .claude folder:
 
@@ -48,6 +48,6 @@ For each decision:
 General rules:
 - Be concise but complete
 - Do NOT repeat the same information across files unless necessary
-- Assume the next session has ZERO prior context, but that they will be told to read CLAUDE.md and these threefiles by the end of the first message
+- Assume the next session has ZERO prior context, but that the first message will at minimum tell them to read CLAUDE.md and these three files - and save them to memory
 - Prefer clarity over cleverness
 - Use bullet points and structured formatting

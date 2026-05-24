@@ -17,7 +17,7 @@ pip install -r requirements.txt
 ```bash
 # Install Ollama (https://ollama.com), then:
 ollama pull llama3.1:8b
-python src/main.py your_textbook.pdf
+python src/main.py your_notes.pdf
 ```
 
 **With a cloud model (better quality):**
@@ -25,7 +25,7 @@ python src/main.py your_textbook.pdf
 ```bash
 cp .env.example .env
 # Edit .env with your OpenRouter API key (free tier available)
-python src/main.py your_textbook.pdf
+python src/main.py your_notes.pdf
 ```
 
 Output lands in `output/` as markdown files ready for Obsidian.
@@ -41,7 +41,7 @@ Each concept becomes a wiki page with:
 - **Related Concepts** — `[[wikilinks]]` to other pages, based on source co-occurrence
 - **Wikilinks in body text** — concept mentions are automatically linked
 
-Example output for an accounting textbook chapter:
+Example output for a chapter of notes on accounting, or a lawfully obtained sample PDF:
 
 ```markdown
 # First in First Out
@@ -155,7 +155,7 @@ Any OpenAI-compatible endpoint works:
 By default, the pipeline auto-generates concept names from your document. For better results in a specific domain, provide a seed file:
 
 ```bash
-python src/main.py textbook.pdf --seeds seeds/accounting.json
+python src/main.py your_notes.pdf --seeds seeds/accounting.json
 ```
 
 Seed files are simple JSON arrays of concept names:
