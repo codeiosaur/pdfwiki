@@ -10,7 +10,14 @@ from backend.config import _load_dotenv
 from cli import build_parser, apply_args_to_env
 from generate.renderers import generate_pages, generate_pages_wiki, render_pages_preview
 from generate.synthesize import synthesize_pages
-from pipeline import validate_pipeline_inputs, write_vault, run_pipeline_two_pass, run_pipeline_streaming, run_pipeline_parallel
+from pipeline import (
+    validate_pipeline_inputs,
+    prepare_vault_output,
+    write_vault,
+    run_pipeline_two_pass,
+    run_pipeline_streaming,
+    run_pipeline_parallel,
+)
 from postprocess import (
     apply_canonical_map,
     check_evaluation_assertions,
@@ -53,7 +60,9 @@ def _resynthesize_vault(vault_dir: str) -> None:
     if json_path:
         _, _, pass3_backend = create_pass_backends_from_config(json_path)
     else:
-        pass3_backend = create_backend(provider="openai_compat", label="local")
+        # Respect the normal pass-specific/global environment configuration.
+        # Resynthesis must not silently fall back to a local backend.
+        _, _, pass3_backend = create_pass_backends()
 
     synthesis_workers = int(os.getenv("PIPELINE_SYNTHESIS_WORKERS", "1"))
 
@@ -376,6 +385,7 @@ def run_application(args) -> None:
         if isinstance(pages_streaming, list) and pages_streaming:
             _, preview_page = pages_streaming[0]
 
+        prepare_vault_output(output_path)
         write_vault(pages_streaming, output_path)
         print(f"Pass 3 [synthesis]: completed ({time.perf_counter() - _t:.0f}s)")
 
