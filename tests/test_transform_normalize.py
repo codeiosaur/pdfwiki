@@ -14,10 +14,8 @@ class TestNormalizeConceptRules:
     def test_lowercase_multiword_title_cased(self):
         assert normalize_concept_rules("balance sheet") == "Balance Sheet"
 
-    # Title case (note: "system" is a generic suffix and gets stripped)
-    def test_title_case_applied(self):
-        # "system" is in GENERIC_SUFFIXES; only the stem "Inventory" remains
-        assert normalize_concept_rules("inventory system") == "Inventory"
+    def test_meaningful_suffix_is_preserved(self):
+        assert normalize_concept_rules("inventory system") == "Inventory System"
 
     def test_title_case_two_meaningful_words(self):
         assert normalize_concept_rules("balance sheet") == "Balance Sheet"
@@ -26,46 +24,45 @@ class TestNormalizeConceptRules:
         result = normalize_concept_rules("RSA encryption")
         assert "RSA" in result
 
-    # Singularization
-    def test_singularize_plural_s(self):
+    # Singular and plural can name different concepts; leave both intact.
+    def test_preserves_plural_s(self):
         result = normalize_concept_rules("inventory systems")
-        assert result.endswith("System")
+        assert result.endswith("Systems")
 
-    def test_singularize_ies_to_y(self):
+    def test_preserves_plural_ies(self):
         result = normalize_concept_rules("certificate authorities")
-        assert result.endswith("Authority")
+        assert result.endswith("Authorities")
 
     def test_no_singularize_ss(self):
         result = normalize_concept_rules("business class")
         assert result.endswith("Class")
 
-    # Dedupe repeated words
-    def test_dedupe_repeated_words(self):
+    # Repetition can be meaningful in some subjects; don't guess.
+    def test_preserves_repeated_words(self):
         result = normalize_concept_rules("Inventory Inventory")
-        assert result == "Inventory"
+        assert result == "Inventory Inventory"
 
     def test_dedupe_case_insensitive(self):
         result = normalize_concept_rules("key KEY")
-        # Should collapse to single token
-        assert "Key Key" not in result
+        assert result == "Key KEY"
 
-    # Leading filler removal
-    def test_removes_number_of_prefix(self):
+    # Leading phrases and suffixes can change the concept.
+    def test_preserves_number_of_prefix(self):
         result = normalize_concept_rules("number of transactions")
-        assert not result.lower().startswith("number")
+        assert result == "Number of Transactions"
 
-    def test_removes_type_of_prefix(self):
+    def test_preserves_type_of_prefix(self):
         result = normalize_concept_rules("type of account")
-        assert not result.lower().startswith("type")
+        assert result == "Type of Account"
 
     # Generic suffix removal
-    def test_removes_generic_method_suffix(self):
+    def test_preserves_method_suffix(self):
         result = normalize_concept_rules("RSA Encryption Method")
-        assert not result.endswith("Method")
+        assert result.endswith("Method")
 
-    def test_removes_system_suffix_when_meaningful_stem(self):
+    def test_preserves_system_suffix(self):
         result = normalize_concept_rules("Perpetual Inventory System")
-        assert not result.endswith("System")
+        assert result.endswith("System")
 
     def test_keeps_suffix_when_stem_too_short(self):
         # Single short token — keep suffix
@@ -74,14 +71,20 @@ class TestNormalizeConceptRules:
         assert isinstance(result, str)
 
     # Parenthetical normalization
-    def test_parenthetical_acronym_collapsed(self):
+    def test_parenthetical_acronym_preserved(self):
         result = normalize_concept_rules("Days Sales in Inventory (DSI)")
-        assert "(DSI)" not in result
+        assert "(DSI)" in result
         assert "Days Sales" in result
 
-    def test_hyphens_become_spaces(self):
+    def test_hyphens_preserved(self):
         result = normalize_concept_rules("First-In-First-Out")
-        assert "-" not in result
+        assert result == "First-In-First-Out"
+
+    def test_mixed_case_model_names_preserved(self):
+        assert normalize_concept_rules("MoE and OpenAI") == "MoE and OpenAI"
+
+    def test_no_accounting_expansion(self):
+        assert normalize_concept_rules("avg velocity") == "Avg Velocity"
 
     # Edge cases
     def test_empty_string(self):
@@ -118,12 +121,12 @@ class TestNormalizeGroupKeys:
         total = sum(len(v) for v in result.values())
         assert total == 3
 
-    def test_preposition_variants_collapse_to_single_group(self):
+    def test_preposition_variants_remain_distinct(self):
         grouped = {
             "Days Sales in Inventory": [self._make_fact("Days Sales in Inventory", "fact a")],
             "Days Sales of Inventory": [self._make_fact("Days Sales of Inventory", "fact b")],
         }
         result = normalize_group_keys(grouped)
-        assert len(result) == 1
+        assert len(result) == 2
         total = sum(len(v) for v in result.values())
         assert total == 2

@@ -65,10 +65,10 @@ All LLM calls go through a pluggable backend interface:
 
 After extraction, facts go through deterministic (non-LLM) processing:
 
-1. **filter.py** — Reject invalid concept names (years, countries, verbs, vague descriptors)
+1. **filter.py** — Reject obvious placeholders and internal artifacts without assuming a subject
 2. **grouping.py** — Group facts by normalized concept name
-3. **normalize.py** — Deterministic rule-based normalization (title case, singularize, dedupe words)
-4. **canonicalize.py** — LLM-assisted canonicalization with persistent cache
+3. **normalize.py** — Conservative formatting (whitespace/case only); preserves meaningful words, punctuation, and plurals
+4. **canonicalize.py** — LLM-assisted canonicalization with a versioned persistent cache; uncertain names stay unchanged, and temporary failures are not cached
 5. **merge.py** — Merge exact-token duplicates and strong-overlap concepts
 6. **cluster.py** — Cluster related concepts (same head+tail tokens), respecting siblings and antonyms
 7. **Consolidation** (in main.py) — One final LLM pass to catch remaining duplicates

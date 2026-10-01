@@ -4,92 +4,24 @@ from typing import List
 from extract.fact_extractor import Fact
 
 
-GENERIC_SUFFIXES = {"method", "system", "approach", "model", "technique", "process"}
-LEADING_FILLERS = ("number of ", "type of ", "kind of ")
-MERGE_KEY_STOPWORDS = {"a", "an", "the", "of", "in", "for", "to"}
+_LOWERCASE_CONNECTORS = {"a", "an", "and", "for", "in", "of", "or", "the", "to"}
 
 
-def _split_words(text: str) -> List[str]:
-	return [token for token in re.split(r"\s+", text.strip()) if token]
-
-
-_SINGULARIZE_EXCEPTIONS = {
-    "analysis", "basis", "axis", "thesis", "crisis", "diagnosis",
-    "emphasis", "hypothesis", "oasis", "parenthesis", "synopsis",
-    "status", "apparatus", "campus", "virus", "census", "bonus",
-    "class", "grass", "glass", "mass", "pass", "brass",
-}
-
-
-def _singularize_last_word(words: List[str]) -> List[str]:
-	if not words:
-		return words
-
-	last = words[-1]
-	lower = last.lower()
-	if lower in _SINGULARIZE_EXCEPTIONS:
-		return words
-	if len(lower) > 3 and lower.endswith("s"):
-		if lower.endswith("ies") and len(lower) > 4:
-			words[-1] = last[:-3] + "y"
-		elif not lower.endswith("ss"):
-			words[-1] = last[:-1]
-	return words
-
-
-def _dedupe_repeated_words(words: List[str]) -> List[str]:
-	if not words:
-		return words
-
-	deduped = [words[0]]
-	for token in words[1:]:
-		if token.lower() != deduped[-1].lower():
-			deduped.append(token)
-	return deduped
-
-
-def _normalize_parentheses(concept: str) -> str:
-	# Normalize patterns like "Full Form (ABC)" by keeping one consistent form.
-	match = re.match(r"^\s*(.*?)\s*\(([^()]+)\)\s*$", concept)
-	if not match:
-		return concept
-
-	left = re.sub(r"\s+", " ", match.group(1)).strip()
-	inside = re.sub(r"\s+", " ", match.group(2)).strip()
-	if not left:
-		return inside
-	if not inside:
-		return left
-
-	left_words = [w for w in re.findall(r"[A-Za-z0-9]+", left) if w]
-	initials = "".join(word[0].upper() for word in left_words if word)
-	inside_compact = re.sub(r"[^A-Za-z0-9]", "", inside).upper()
-
-	# If parenthetical is an acronym of the left phrase, keep full phrase only.
-	if inside_compact and inside_compact == initials and 2 <= len(inside_compact) <= 6:
-		return left
-
-	# If both are essentially the same token, keep a single copy.
-	if left.lower() == inside.lower():
-		return left
-
-	return f"{left} {inside}"
-
-
-def _title_case_preserve_acronyms(words: List[str]) -> List[str]:
-	out: List[str] = []
-	for word in words:
-		clean = re.sub(r"[^A-Za-z0-9]", "", word)
-		if clean.isupper() and 2 <= len(clean) <= 6:
-			out.append(clean)
-		else:
-			out.append(word.lower().capitalize())
-	return out
+def _format_word(word: str, first: bool) -> str:
+	"""Format ordinary words without changing acronyms or mixed-case names."""
+	if not first and word.lower() in _LOWERCASE_CONNECTORS:
+		return word.lower()
+	if "-" in word or "/" in word:
+		# capitalize() would turn "First-In" into "First-in".
+		return word[:1].upper() + word[1:] if word.islower() else word
+	if word.islower() or word.istitle():
+		return word.capitalize()
+	return word
 
 
 def normalize_concept_rules(concept: str) -> str:
 	"""
-	Deterministic, domain-agnostic concept normalization.
+	Normalize presentation only; do not infer that names mean the same thing.
 	"""
 	if not concept:
 		return concept
@@ -98,40 +30,9 @@ def normalize_concept_rules(concept: str) -> str:
 	if not text:
 		return text
 
-	# Rule 2: collapse parenthetical duplication to one consistent form.
-	text = _normalize_parentheses(text)
-
-	# Rule 3: punctuation normalization.
-	text = text.replace("-", " ")
-	text = re.sub(r"\s+", " ", text).strip()
-
-	# Rule 6: remove leading filler phrases.
-	lowered = text.lower()
-	for filler in LEADING_FILLERS:
-		if lowered.startswith(filler):
-			text = text[len(filler):].strip()
-			break
-
-	words = _split_words(text)
-	if not words:
-		return ""
-
-	# Rule 7: dedupe repeated words.
-	words = _dedupe_repeated_words(words)
-
-	# Rule 4: remove generic trailing suffix when remaining phrase is meaningful.
-	if words and words[-1].lower() in GENERIC_SUFFIXES:
-		stem = words[:-1]
-		if len(stem) >= 2 or (len(stem) == 1 and len(stem[0]) > 3):
-			words = stem
-
-	# Rule 5: singularize last word.
-	words = _singularize_last_word(words)
-
-	# Rule 1: title case with acronym preservation.
-	words = _title_case_preserve_acronyms(words)
-
-	return " ".join(words)
+	text = re.sub(r"\s+", " ", text)
+	text = re.sub(r"\s+([,.;:])", r"\1", text)
+	return " ".join(_format_word(word, i == 0) for i, word in enumerate(text.split()))
 
 
 def normalize_group_keys(grouped: dict[str, List[Fact]]) -> dict[str, List[Fact]]:
@@ -141,27 +42,16 @@ def normalize_group_keys(grouped: dict[str, List[Fact]]) -> dict[str, List[Fact]
 	normalized_grouped: dict[str, List[Fact]] = {}
 	merge_key_to_title: dict[str, str] = {}
 
-	def _merge_key(title: str) -> str:
-		# Merge-key is preposition/article-insensitive so superficial wording
-		# variants (e.g. "X of Y" vs "X in Y") can collapse.
-		tokens = [
-			t.lower() for t in re.findall(r"[A-Za-z0-9]+", title)
-			if t.lower() not in MERGE_KEY_STOPWORDS
-		]
-		return " ".join(tokens)
-
 	for concept, facts in grouped.items():
 		normalized = normalize_concept_rules(concept)
 		target = normalized if normalized else concept
-		key = _merge_key(target)
+		key = target.casefold()
 		if key:
 			existing = merge_key_to_title.get(key)
 			if existing is None:
 				merge_key_to_title[key] = target
 			else:
-				# Keep the more descriptive canonical label.
-				if len(target) > len(existing):
-					merge_key_to_title[key] = target
-			target = merge_key_to_title[key]
+				# The first spelling is stable; later case variants share its group.
+				target = existing
 		normalized_grouped.setdefault(target, []).extend(facts)
 	return normalized_grouped

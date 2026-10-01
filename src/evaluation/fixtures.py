@@ -35,6 +35,7 @@ class EvaluationCase:
     chunks: tuple[EvaluationChunk, ...]
     expected_concepts: tuple[GoldConcept, ...]
     forbidden_concepts: tuple[str, ...] = ()
+    noise_only: bool = False
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -104,6 +105,11 @@ def load_fixture_corpus(version: str = "v1") -> tuple[EvaluationCase, ...]:
         forbidden_raw = raw_case.get("forbidden_concepts", [])
         if not isinstance(forbidden_raw, list) or not all(isinstance(item, str) for item in forbidden_raw):
             raise ValueError(f"Fixture case '{case_id}' has invalid forbidden_concepts")
+        noise_only = raw_case.get("noise_only", False)
+        if not isinstance(noise_only, bool):
+            raise ValueError(f"Fixture case '{case_id}' has invalid noise_only")
+        if noise_only and concepts:
+            raise ValueError(f"Fixture case '{case_id}' cannot have gold concepts when noise_only")
 
         cases.append(
             EvaluationCase(
@@ -112,6 +118,7 @@ def load_fixture_corpus(version: str = "v1") -> tuple[EvaluationCase, ...]:
                 chunks=chunks,
                 expected_concepts=concepts,
                 forbidden_concepts=tuple(item.strip() for item in forbidden_raw if item.strip()),
+                noise_only=noise_only,
             )
         )
 

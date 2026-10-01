@@ -74,6 +74,7 @@
     {
       "id": "noise-only",
       "description": "Contents and bibliography noise that should not produce study concepts.",
+      "noise_only": true,
       "chunks": [
         {
           "id": "noise-01",

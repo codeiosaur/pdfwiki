@@ -14,29 +14,31 @@ from extract.fact_extractor import Fact
     ("Balance Sheet", True),
     ("RSA Encryption", True),
 
-    # Reject: years
-    ("2024 Cryptography", False),
-    ("SSL 2021 Update", False),
+    # A date, possessive, country, or gerund can be part of a real subject.
+    ("2024 Cryptography", True),
+    ("SSL 2021 Update", True),
 
     # Reject: possessive
-    ("France's Encryption", False),
-    ("Bob's Key", False),
+    ("France's Encryption", True),
+    ("Bob's Key", True),
 
     # Reject: vague descriptors
-    ("Example of Hashing", False),
-    ("Case Study: Enron", False),
-    ("Scenario Analysis", False),
-    ("Impact on Security", False),
-    ("Effect of Policies", False),
+    ("Example of Hashing", True),
+    ("Case Study: Enron", True),
+    ("Scenario Analysis", True),
+    ("Impact on Security", True),
+    ("Effect of Policies", True),
+    ("Example", False),
+    ("Overview", False),
 
     # Reject: countries
-    ("France History", False),
-    ("Germany War", False),
-    ("United States RSA", False),
+    ("France History", True),
+    ("Germany War", True),
+    ("United States RSA", True),
 
     # Reject: verb-ing tokens (filter rejects common action verbs as first word)
-    ("Running Encryption", False),
-    ("Breaking System", False),
+    ("Running Encryption", True),
+    ("Breaking System", True),
 
     # Allow: common -ing nouns
     ("String Operations", True),
@@ -48,8 +50,8 @@ from extract.fact_extractor import Fact
     ("One Two Three Four Five Six Seven", False),
 
     # Reject: U S / U K patterns
-    ("U S Encryption", False),
-    ("U K Standards", False),
+    ("U S Encryption", True),
+    ("U K Standards", True),
 
     # Reject: internal pipeline concept leakage
     ("Canonicalize Concept Names", False),

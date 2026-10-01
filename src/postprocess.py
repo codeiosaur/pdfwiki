@@ -129,15 +129,16 @@ Concept list:
 Rules:
 - Only merge concepts that are TRULY the same thing (just named differently).
 - Do NOT merge related-but-distinct concepts.
-- "Inventory Fraud" and "Inventory Shrinkage" are DIFFERENT — do not merge.
-- "Gross Profit" and "Gross Margin" may be the same — merge if so.
-- "FIFO" and "First In First Out" are the same — merge.
+- Shared words are not enough: "Graph" and "Graph Theory" are different.
+- Spelling/punctuation variants of the same term may be merged.
+- Treat abbreviations as aliases only when their expansion is unambiguous
+  from the names provided; otherwise leave them alone.
 
 Output a JSON object mapping duplicate names to their canonical name.
 Only include concepts that need merging. Use the more standard name as canonical.
 If no merges needed, output: {{}}
 
-Example: {{"FIFO": "First In First Out", "Gross Margin": "Gross Profit"}}"""
+Example format: {{"Public Key Cryptography": "Public-Key Cryptography"}}"""
 
     try:
         raw_content = backend.generate(prompt, max_tokens=400)

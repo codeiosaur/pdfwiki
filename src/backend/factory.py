@@ -32,7 +32,7 @@ _DEFAULT_BASE_URL = "http://localhost:11434/v1"
 _DEFAULT_MODEL = "llama3.1:8b"
 _DEFAULT_TEMPERATURE = 0.0
 
-# The old 900-token cap predated the batch_size=4 / 10-20-statements-per-chunk changes.
+# The old 900-token cap predates multi-chunk extraction batches.
 # At 4 chunks × 15 statements × ~30 tokens each the response easily exceeds 900 tokens
 # and the JSON gets truncated.  Modern Ollama models handle 4096 tokens without issue.
 _DEFAULT_MAX_TOKENS = 4096
