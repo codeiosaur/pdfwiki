@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, List, Optional
 import logging
+import json
 import os
 import random
 import sys
@@ -28,6 +29,35 @@ from ingest.pdf_loader import Chunk, load_pdf_chunks
 from transform.matching import is_sibling, has_antonym_conflict, register_antonym_pairs
 
 _INVALID_FILENAME_CHARS = str.maketrans({c: "" for c in r'\/:*?"<>|'})
+_VAULT_MANIFEST_NAME = ".pdfwiki-manifest.json"
+
+
+def _vault_manifest_path(output_dir: Path) -> Path:
+    return output_dir / _VAULT_MANIFEST_NAME
+
+
+def prepare_vault_output(output_dir: Path) -> None:
+    """Remove pages owned by the previous run before writing a new run."""
+    if not output_dir.is_dir():
+        return
+    manifest_path = _vault_manifest_path(output_dir)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return
+    owned_files = manifest.get("files", [])
+    if not isinstance(owned_files, list):
+        return
+    for filename in owned_files:
+        if not isinstance(filename, str) or Path(filename).name != filename:
+            continue
+        target = output_dir / filename
+        if target.is_file():
+            target.unlink()
+    try:
+        manifest_path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 @dataclass
@@ -112,6 +142,9 @@ def write_vault(pages: dict[str, str] | Iterator[tuple[str, str]], output_dir: P
         except OSError as exc:
             print(f"Error: Failed to create output directory '{output_dir}': {exc}")
             sys.exit(1)
+    elif not output_dir.is_dir():
+        print(f"Error: Output path is not a directory: '{output_dir}'")
+        sys.exit(1)
     else:
         existing = list(output_dir.iterdir())
         if existing:
@@ -127,12 +160,14 @@ def write_vault(pages: dict[str, str] | Iterator[tuple[str, str]], output_dir: P
         pages_iter = pages
 
     written = 0
+    written_files: set[str] = set()
     for title, content in pages_iter:
         safe_name = title.translate(_INVALID_FILENAME_CHARS).strip() or "Unnamed Concept"
         file_path = output_dir / f"{safe_name}.md"
         try:
             file_path.write_text(content, encoding="utf-8")
             written += 1
+            written_files.add(file_path.name)
         except PermissionError:
             print(f"Error: Cannot write '{file_path}': permission denied.")
             print("Check that you have write access to the output directory.")
@@ -140,6 +175,20 @@ def write_vault(pages: dict[str, str] | Iterator[tuple[str, str]], output_dir: P
         except OSError as exc:
             print(f"Error: Failed to write '{file_path}': {exc}")
             sys.exit(1)
+
+    manifest_path = _vault_manifest_path(output_dir)
+    try:
+        previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        previous_manifest = {}
+    previous_files = previous_manifest.get("files", [])
+    if not isinstance(previous_files, list):
+        previous_files = []
+    all_owned_files = sorted({f for f in previous_files if isinstance(f, str)} | written_files)
+    manifest_path.write_text(
+        json.dumps({"version": 1, "files": all_owned_files}, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     print(f"Vault written: {written} pages -> {output_dir}/")
 

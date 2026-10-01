@@ -1,0 +1,90 @@
+{
+  "cases": [
+    {
+      "id": "clean-accounting",
+      "description": "Clean prose with a definition, comparison, and formula.",
+      "chunks": [
+        {
+          "id": "clean-01",
+          "source": "clean-accounting.pdf",
+          "location_label": "Page 12",
+          "text": "First-in, first-out (FIFO) assumes the oldest inventory costs are sold first. In periods of rising prices, FIFO usually leaves newer costs in ending inventory."
+        },
+        {
+          "id": "clean-02",
+          "source": "clean-accounting.pdf",
+          "location_label": "Page 13",
+          "text": "Inventory turnover equals cost of goods sold divided by average inventory. A higher turnover can indicate inventory is sold more frequently."
+        }
+      ],
+      "expected_concepts": [
+        {"name": "First In First Out", "aliases": ["FIFO"], "required_terms": ["oldest", "inventory"]},
+        {"name": "Inventory Turnover", "aliases": ["Inventory Turnover Ratio"], "required_terms": ["cost of goods sold", "average inventory"]}
+      ],
+      "forbidden_concepts": ["Page 12", "Page 13"]
+    },
+    {
+      "id": "slide-bullets",
+      "description": "Slide-like notes with terse bullets and a repeated footer.",
+      "chunks": [
+        {
+          "id": "slide-04",
+          "source": "operations-slides.pdf",
+          "location_label": "Slide 4",
+          "text": "LEAN SYSTEM\n- Remove activities that do not add customer value\n- Reduce waste and delays\nOperations Management — Week 3"
+        }
+      ],
+      "expected_concepts": [
+        {"name": "Lean System", "aliases": ["Lean"], "required_terms": ["waste", "customer value"]}
+      ],
+      "forbidden_concepts": ["Operations Management", "Week 3"]
+    },
+    {
+      "id": "ocr-notes",
+      "description": "Noisy OCR-style notes with broken words and punctuation.",
+      "chunks": [
+        {
+          "id": "ocr-03",
+          "source": "scanned-notes.pdf",
+          "location_label": "OCR page 3",
+          "text": "oppor tunity cost = value of the next best alter native forgone. not the money spent only."
+        }
+      ],
+      "expected_concepts": [
+        {"name": "Opportunity Cost", "required_terms": ["next best", "forgone"]}
+      ],
+      "forbidden_concepts": ["Money Spent"]
+    },
+    {
+      "id": "diagram-labels",
+      "description": "Diagram-adjacent labels represented as extracted text from one slide.",
+      "chunks": [
+        {
+          "id": "diagram-08",
+          "source": "cell-cycle-diagrams.pdf",
+          "location_label": "Slide 8, diagram region A",
+          "text": "Cell cycle diagram: Interphase includes G1, S, and G2. During S phase, DNA is replicated before cell division."
+        }
+      ],
+      "expected_concepts": [
+        {"name": "S Phase", "aliases": ["S phase"], "required_terms": ["dna", "replicated"]}
+      ],
+      "forbidden_concepts": ["Diagram Region"]
+    },
+    {
+      "id": "noise-only",
+      "description": "Contents and bibliography noise that should not produce study concepts.",
+      "noise_only": true,
+      "chunks": [
+        {
+          "id": "noise-01",
+          "source": "course-packet.pdf",
+          "location_label": "Page 1",
+          "text": "Contents: Chapter 1 Introduction ........ 3. References: Smith, J. (2024). Course materials. See Figure 2 on page 8."
+        }
+      ],
+      "expected_concepts": [],
+      "forbidden_concepts": ["Introduction", "References", "Figure 2"]
+    }
+  ]
+}

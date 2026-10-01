@@ -86,7 +86,7 @@ def derive_seed_concepts(
 
     Asks the LLM to identify the key concepts covered by the statements,
     producing a domain-specific seed list for Pass 2 concept assignment.
-    Returns an empty list on failure so the caller can fall back to SEED_CONCEPTS.
+    Returns an empty list on failure so Pass 2 can proceed without seeds.
     """
     if not statements:
         return []
@@ -97,13 +97,14 @@ def derive_seed_concepts(
     )
 
     prompt = f"""The following statements were extracted from a document.
-Identify the {target_count} most important distinct concept names a reader would need to know.
+Identify up to {target_count} important distinct concept names a reader would need to know.
+Return fewer when the statements do not support that many; do not invent names to fill a quota.
 
 Rules:
 - Short noun phrases only (1-4 words)
 - Use standard domain terminology
 - Each name must be meaningfully distinct
-- Do NOT use vague names like "Overview", "Impact", "Effects", "Goals", "Management"
+- Do NOT use standalone placeholders like "Overview" or "Summary"; these words may be valid parts of a specific concept name.
 - Do NOT repeat the same concept under different phrasings
 - Prefer concepts the document teaches in depth over concepts it merely mentions as examples or context. A concept worth a page is one a reader must understand to master the subject — not one that appears only to illustrate a point.
 
@@ -252,7 +253,8 @@ def extract_raw_statements_batched(
         prompt = f"""Extract factual statements from the text sections below.
 
 Rules:
-- Be thorough -- extract 10-20 statements per text section.
+- Extract every distinct, study-worthy claim supported by the text. There is no target count; return an empty array if there are no such claims.
+- Do not infer missing facts from a heading, label, incomplete OCR fragment, or your own background knowledge.
 - Each statement must be ONE complete, self-contained factual claim.
 - Write clear sentences a student could study from.
 - Include definitions, relationships between concepts, rules, exceptions, and comparisons.
@@ -407,7 +409,7 @@ Rules:
 - Use a preferred name from the list above whenever possible.
 - If no preferred name fits, create a SHORT noun phrase (1-4 words).
 - Use standard notes terminology for new names.
-- Do NOT use vague names like "Overview", "Impact", "Method", "Management".
+- Do NOT use standalone placeholders like "Overview" or "Summary"; these words may be valid parts of a specific concept name.
 - Every statement must get exactly one concept name.
 - If a statement fits multiple concepts from the list, assign it to the more specific one.
 

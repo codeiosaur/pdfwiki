@@ -11,10 +11,14 @@ from pathlib import Path
 import json
 import re
 
+from transform.normalize import normalize_concept_rules
+
 if TYPE_CHECKING:
     from backend.base import LLMBackend
 
-CANONICAL_CACHE_PATH = Path(__file__).with_name("canonical_cache.json")
+# Old responses used an accounting-biased prompt. Do not reuse them with the
+# domain-neutral prompt; leave the old ignored cache untouched for recovery.
+CANONICAL_CACHE_PATH = Path(__file__).with_name("canonical_cache_v2.json")
 
 
 def load_canonical_cache() -> dict[str, Optional[str]]:
@@ -41,70 +45,6 @@ def load_canonical_cache() -> dict[str, Optional[str]]:
 def save_canonical_cache(cache: dict[str, Optional[str]]) -> None:
     with CANONICAL_CACHE_PATH.open("w", encoding="utf-8") as f:
         json.dump(cache, f, indent=2, ensure_ascii=False)
-
-
-def _title_case_concept(text: str) -> str:
-    lowercase_words = {"of", "in", "and", "or", "to"}
-    tokens = text.split()
-    if not tokens:
-        return text
-
-    out: list[str] = []
-    for i, token in enumerate(tokens):
-        lower = token.lower()
-        if i > 0 and lower in lowercase_words:
-            out.append(lower)
-        else:
-            out.append(lower.capitalize())
-    return " ".join(out)
-
-
-def normalize_concept_rules(concept: str) -> str:
-    """
-    Deterministic concept normalization before LLM canonicalization.
-
-    - Expand common abbreviations: FIFO, LIFO, LCM, COGS, AVG
-    - Remove redundant trailing suffixes like Method/System/Approach when safe
-    - Fix spacing/casing issues
-    - Normalize selected variants to canonical notes forms
-    """
-    if not concept:
-        return concept
-
-    normalized = re.sub(r"\s+", " ", concept).strip()
-    normalized = re.sub(r"\s+([,.;:])", r"\1", normalized)
-
-    lower = normalized.lower()
-    if re.search(r"\bfifo\b", lower) or re.search(r"\bfirst\s+in\s+first\s+out\b", lower):
-        normalized = "First In First Out"
-    elif re.search(r"\blifo\b", lower) or re.search(r"\blast\s+in\s+first\s+out\b", lower):
-        normalized = "Last In First Out"
-    elif re.search(r"\blcm\b", lower) or re.search(r"\blower\s+of\s+cost\s+or\s+market\b", lower):
-        normalized = "Lower of Cost or Market"
-    elif re.search(r"\bcogs\b", lower) or re.search(r"\bcost\s+of\s+goods\s+sold\b", lower):
-        normalized = "Cost of Goods Sold"
-    elif re.search(r"\bavg\b", lower) or re.search(r"\baverage\b", lower):
-        normalized = "Average Cost"
-    elif (
-        ("epcs" in lower or "electronic product" in lower)
-        and "code" in lower
-    ):
-        normalized = "Electronic Product Code"
-
-    words = normalized.split()
-    if len(words) >= 3 and words[-1].lower() in {"method", "system", "approach"}:
-        stem = " ".join(words[:-1]).lower()
-        if any(key in stem for key in [
-            "first in first out",
-            "last in first out",
-            "lower of cost or market",
-            "cost of goods sold",
-            "average cost",
-            "electronic product code",
-        ]):
-            normalized = " ".join(words[:-1])
-
-    return _title_case_concept(normalized)
 
 
 def canonicalize_concepts(
@@ -135,24 +75,20 @@ def canonicalize_concepts(
     Canonicalize concept names from academic material.
 
     Goals:
-    - Fix spelling, casing, and malformed possessives.
-    - Expand common abbreviations when appropriate:
-        COGS -> Cost of Goods Sold
-        LCM -> Lower of Cost or Market
-    - Normalize variants to one notes name:
-        FIFO, First In First Out Method -> First In First Out
-    - Fix acronym casing errors:
-        Epcs -> Electronic Product Code
-    - Remove redundant suffixes when non-essential:
-        Method, System, Approach
-    - Keep names concise noun phrases (1-4 words).
+    - Fix obvious spelling, spacing, and casing errors without changing meaning.
+    - Expand an abbreviation only if its meaning is unambiguous from these names.
+    - Keep informative words such as Method, System, Model, or Theory when they
+      distinguish a concept from another one.
 
     Strict rules:
-    - Do NOT merge distinct concepts (FIFO and LIFO must stay separate).
-    - Do NOT generalize (do not map FIFO -> Inventory Method).
+    - Do NOT merge related-but-distinct concepts or names that differ in
+      meaningful qualifiers, including prepositions, numbers, and suffixes.
+    - Do NOT guess the expansion of an ambiguous abbreviation.
+    - Do NOT generalize a specific name to a broader topic.
     - Do NOT invent concepts.
     - Preserve meaning exactly.
-    - Return null only if the concept is invalid, vague, or not a real concept.
+    - If uncertain, return the original name unchanged. Use null only for an
+      obvious placeholder or malformed artifact, never for an unfamiliar term.
 
     Output:
     - Return ONLY valid JSON object mapping original -> canonical_or_null.
@@ -171,9 +107,7 @@ def canonicalize_concepts(
     try:
         raw_content = backend.generate(prompt, max_tokens=600)
     except Exception:
-        for name in missing:
-            cache[name] = None
-        save_canonical_cache(cache)
+        # A temporary backend failure is not a canonicalization decision.
         return {name: cache.get(name) for name in concepts}
 
     # Parse JSON safely.
@@ -183,27 +117,23 @@ def canonicalize_concepts(
         start = raw_content.find("{")
         end = raw_content.rfind("}")
         if start == -1 or end == -1 or end <= start:
-            for name in missing:
-                cache[name] = None
-            save_canonical_cache(cache)
             return {name: cache.get(name) for name in concepts}
         try:
             parsed = json.loads(raw_content[start : end + 1])
         except Exception:
-            for name in missing:
-                cache[name] = None
-            save_canonical_cache(cache)
             return {name: cache.get(name) for name in concepts}
 
     if not isinstance(parsed, dict):
-        for name in missing:
-            cache[name] = None
-        save_canonical_cache(cache)
         return {name: cache.get(name) for name in concepts}
 
     for name in missing:
-        value = parsed.get(name)
-        cache[name] = value if isinstance(value, str) else None
+        if name not in parsed:
+            continue  # An incomplete response should be retried next run.
+        value = parsed[name]
+        if value is None:
+            cache[name] = None
+        elif isinstance(value, str) and value.strip():
+            cache[name] = value.strip()
 
     save_canonical_cache(cache)
     return {name: cache.get(name) for name in concepts}

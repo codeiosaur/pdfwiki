@@ -7,8 +7,8 @@ Feed it your course notes, and it produces wiki-style concept pages with definit
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pdf-to-wiki.git
-cd pdf-to-wiki
+git clone https://github.com/codeiosaur/pdfwiki.git
+cd pdfwiki
 pip install -r requirements.txt
 ```
 
@@ -197,7 +197,7 @@ RULES.md               # Code conventions
 
 ## Status
 
-**v2.0** — Production-ready pipeline with:
+**v2.3** — Production-ready pipeline with:
 - Two-pass extraction (local + cloud hybrid)
 - Pluggable LLM backends (Ollama, OpenRouter, Anthropic, any OpenAI-compatible)
 - Structured JSON outputs with OpenRouter
@@ -221,4 +221,3 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/> or <https://github.com/codeiosaur/pdfwiki>.
-

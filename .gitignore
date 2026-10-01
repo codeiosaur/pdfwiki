@@ -37,5 +37,7 @@ backends.yaml
 .aider*
 # Manual seed concepts used for testing and UX - safe to include
 !seeds/*.json
+# Versioned evaluation fixtures are safe, deterministic test data.
+!evaluations/fixtures/**/corpus.json
 # Keep example files
 !backends.yaml.example

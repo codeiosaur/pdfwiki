@@ -7,7 +7,37 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from backend.base import BackendConfig
-from pipeline import PipelineMetrics, run_pipeline_two_pass, run_pipeline_streaming, validate_pipeline_inputs
+from pipeline import (
+    PipelineMetrics,
+    prepare_vault_output,
+    run_pipeline_two_pass,
+    run_pipeline_streaming,
+    validate_pipeline_inputs,
+    write_vault,
+)
+
+
+def test_write_vault_tracks_generated_files_and_cleans_stale_pages(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "Keep User Note.md").write_text("user edit", encoding="utf-8")
+    write_vault({"Old Concept": "old"}, vault)
+
+    prepare_vault_output(vault)
+    write_vault({"New Concept": "new"}, vault)
+
+    assert not (vault / "Old Concept.md").exists()
+    assert (vault / "Keep User Note.md").read_text(encoding="utf-8") == "user edit"
+    assert (vault / "New Concept.md").read_text(encoding="utf-8") == "new"
+    assert (vault / ".pdfwiki-manifest.json").exists()
+
+
+def test_write_vault_rejects_file_output_path(tmp_path: Path) -> None:
+    output_path = tmp_path / "not-a-directory"
+    output_path.write_text("file", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        write_vault({"Concept": "content"}, output_path)
 
 
 def test_validate_pipeline_inputs_accepts_existing_paths(tmp_path: Path) -> None:
